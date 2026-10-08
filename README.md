@@ -2,7 +2,7 @@
 
 Un logiciel de Sudoku écrit en Rust, développé pour le fun et pour apprendre le langage.
 
-> **État du projet :** en cours de développement. Le jeu est jouable au terminal sur une grille de départ fixe, avec résolution automatique. Il n'y a pas encore de génération de grilles.
+> **État du projet :** en cours de développement. Le jeu est jouable au terminal, avec des grilles générées au hasard et une résolution automatique.
 
 ## Fonctionnalités
 
@@ -15,11 +15,7 @@ Déjà présent :
 - Cases de départ verrouillées, effacement des coups du joueur
 - Boucle de jeu au clavier avec détection de la victoire
 - Résolution automatique par retour sur trace (*backtracking*)
-
-Prévu :
-
-- Génération de nouvelles grilles
-- Choix de la grille de départ par l'utilisateur
+- Génération de grilles aléatoires à solution unique, en trois niveaux de difficulté
 
 ## Comment jouer
 
@@ -45,6 +41,17 @@ git clone <url-du-depot>
 cd Sudoko
 cargo run
 ```
+
+Sans argument, le programme génère une grille de difficulté moyenne. On peut choisir la grille :
+
+```bash
+cargo run -- facile      # 35 cases vides
+cargo run -- moyen       # 45 cases vides (par défaut)
+cargo run -- difficile   # jusqu'à 55 cases vides
+cargo run -- fixe        # toujours la même grille de départ
+```
+
+En mode `difficile`, la génération peut prendre quelques secondes. Elle est bien plus rapide avec `cargo run --release -- difficile`.
 
 ## Tests
 

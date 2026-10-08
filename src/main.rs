@@ -1,5 +1,6 @@
 //! Un programme qui affiche le jeu de Sudoku
 
+use rand::seq::SliceRandom;
 use std::io;
 
 struct Grille {
@@ -130,15 +131,24 @@ impl Grille {
     // Remplit la grille par retour sur trace (backtracking).
     // Renvoie true si une solution a été trouvée, false sinon (la grille est alors inchangée).
     fn resoudre(&mut self) -> bool {
+        // Les chiffres sont essayés dans l'ordre 1 à 9 : on ne les mélange pas
+        self.resoudre_avec(&mut |_| {})
+    }
+
+    // Même chose que resoudre, mais `melanger` peut réordonner les chiffres 1 à 9 avant
+    // chaque case. Avec un mélange aléatoire, on obtient une grille complète au hasard.
+    fn resoudre_avec(&mut self, melanger: &mut impl FnMut(&mut [u8; 9])) -> bool {
         for ligne in 0..9 {
             for col in 0..9 {
                 // On cherche la première case vide
                 if self.cases[ligne][col] == 0 {
-                    for valeur in 1..=9 {
+                    let mut chiffres = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+                    melanger(&mut chiffres);
+                    for valeur in chiffres {
                         if self.est_valide(ligne, col, valeur) {
                             self.cases[ligne][col] = valeur;
                             // On tente de résoudre le reste avec ce choix
-                            if self.resoudre() {
+                            if self.resoudre_avec(melanger) {
                                 return true;
                             }
                             // Impasse : on annule le choix et on essaie la valeur suivante
@@ -152,6 +162,67 @@ impl Grille {
         }
         // Plus aucune case vide : la grille est résolue
         true
+    }
+
+    // Compte les solutions de la grille, en s'arrêtant dès qu'on atteint `limite`.
+    // La grille est remise dans son état d'origine à la fin.
+    fn compter_solutions(&mut self, limite: usize) -> usize {
+        for ligne in 0..9 {
+            for col in 0..9 {
+                if self.cases[ligne][col] == 0 {
+                    let mut total = 0;
+                    for valeur in 1..=9 {
+                        if self.est_valide(ligne, col, valeur) {
+                            self.cases[ligne][col] = valeur;
+                            total += self.compter_solutions(limite - total);
+                            self.cases[ligne][col] = 0;
+                            // Assez de solutions trouvées : inutile de chercher plus loin
+                            if total >= limite {
+                                return total;
+                            }
+                        }
+                    }
+                    return total;
+                }
+            }
+        }
+        // Plus aucune case vide : on vient de trouver exactement une solution
+        1
+    }
+
+    // Génère une grille à solution unique en retirant `a_retirer` cases (au plus) d'une
+    // grille complète tirée au hasard. Plus on en retire, plus la grille est difficile.
+    fn generer(nom: String, a_retirer: usize) -> Grille {
+        let mut rng = rand::rng();
+        let mut grille = Grille::nouvelle(nom);
+        grille.resoudre_avec(&mut |chiffres| chiffres.shuffle(&mut rng));
+
+        // Les 81 positions, dans un ordre aléatoire
+        let mut positions: Vec<(usize, usize)> = (0..81).map(|i| (i / 9, i % 9)).collect();
+        positions.shuffle(&mut rng);
+
+        let mut retirees = 0;
+        for (ligne, col) in positions {
+            if retirees == a_retirer {
+                break;
+            }
+            let valeur = grille.cases[ligne][col];
+            grille.cases[ligne][col] = 0;
+            // On ne garde le retrait que si la grille garde une solution unique
+            if grille.compter_solutions(2) == 1 {
+                retirees += 1;
+            } else {
+                grille.cases[ligne][col] = valeur;
+            }
+        }
+
+        // Les chiffres restants forment la grille de départ : on les verrouille
+        for ligne in 0..9 {
+            for col in 0..9 {
+                grille.fixes[ligne][col] = grille.cases[ligne][col] != 0;
+            }
+        }
+        grille
     }
 }
 
@@ -240,9 +311,23 @@ fn jouer(mut grille: Grille) {
 fn main() {
     // Affiche le titre du programme
     println!("Sudoku");
-    match Grille::depuis_texte(String::from("Partie 1"), DEPART) {
+
+    // Le premier argument de la ligne de commande choisit la grille : cargo run -- facile
+    let choix = std::env::args().nth(1);
+    let grille = match choix.as_deref() {
+        Some("fixe") => Grille::depuis_texte(String::from("Grille fixe"), DEPART),
+        Some("facile") => Ok(Grille::generer(String::from("Partie facile"), 35)),
+        None | Some("moyen") => Ok(Grille::generer(String::from("Partie moyenne"), 45)),
+        Some("difficile") => Ok(Grille::generer(String::from("Partie difficile"), 55)),
+        Some(autre) => Err(format!(
+            "Mode inconnu : '{}' (choix : facile, moyen, difficile, fixe)",
+            autre
+        )),
+    };
+
+    match grille {
         Ok(g) => jouer(g),
-        Err(erreur) => println!("Grille invalide : {}", erreur),
+        Err(erreur) => println!("{}", erreur),
     }
 }
 #[cfg(test)]
@@ -365,6 +450,53 @@ mod tests {
         let mut g = Grille::depuis_texte(String::from("Test"), &texte).unwrap();
         assert!(!g.resoudre());
         assert_eq!(g.cases[0][8], 0);
+    }
+
+    #[test]
+    fn test_compter_solutions() {
+        // Grille vide : beaucoup de solutions, on s'arrête à la limite
+        let mut vide = Grille::nouvelle(String::from("Test"));
+        assert_eq!(vide.compter_solutions(2), 2);
+
+        // La grille de départ n'a qu'une solution
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        assert_eq!(g.compter_solutions(2), 1);
+
+        // La grille est remise dans son état d'origine
+        let identique = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        assert_eq!(g.cases, identique.cases);
+    }
+
+    #[test]
+    fn test_generer_solution_unique() {
+        let mut g = Grille::generer(String::from("Test"), 40);
+        let vides = g.cases.iter().flatten().filter(|&&c| c == 0).count();
+        assert!(vides > 0 && vides <= 40);
+        assert_eq!(g.compter_solutions(2), 1);
+    }
+
+    #[test]
+    fn test_generer_verrouille_les_cases_de_depart() {
+        let g = Grille::generer(String::from("Test"), 40);
+        for ligne in 0..9 {
+            for col in 0..9 {
+                assert_eq!(g.fixes[ligne][col], g.cases[ligne][col] != 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_generer_est_resoluble() {
+        let mut g = Grille::generer(String::from("Test"), 40);
+        assert!(g.resoudre());
+        assert!(g.est_terminee());
+    }
+
+    #[test]
+    fn test_generer_donne_des_grilles_differentes() {
+        let a = Grille::generer(String::from("A"), 40);
+        let b = Grille::generer(String::from("B"), 40);
+        assert_ne!(a.cases, b.cases);
     }
 
     #[test]
