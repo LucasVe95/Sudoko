@@ -126,6 +126,33 @@ impl Grille {
     fn est_terminee(&self) -> bool {
         self.cases.iter().all(|ligne| ligne.iter().all(|&case| case != 0))
     }
+
+    // Remplit la grille par retour sur trace (backtracking).
+    // Renvoie true si une solution a été trouvée, false sinon (la grille est alors inchangée).
+    fn resoudre(&mut self) -> bool {
+        for ligne in 0..9 {
+            for col in 0..9 {
+                // On cherche la première case vide
+                if self.cases[ligne][col] == 0 {
+                    for valeur in 1..=9 {
+                        if self.est_valide(ligne, col, valeur) {
+                            self.cases[ligne][col] = valeur;
+                            // On tente de résoudre le reste avec ce choix
+                            if self.resoudre() {
+                                return true;
+                            }
+                            // Impasse : on annule le choix et on essaie la valeur suivante
+                            self.cases[ligne][col] = 0;
+                        }
+                    }
+                    // Aucune valeur ne convient ici : le choix précédent était mauvais
+                    return false;
+                }
+            }
+        }
+        // Plus aucune case vide : la grille est résolue
+        true
+    }
 }
 
 // Grille de départ : 81 chiffres, 0 = case vide
@@ -150,7 +177,7 @@ fn jouer(mut grille: Grille) {
             break;
         }
 
-        println!("Coup : ligne colonne valeur (1-9, 0 pour effacer) ou 'q' pour quitter");
+        println!("Coup : ligne colonne valeur (1-9, 0 pour effacer), 's' pour la solution, 'q' pour quitter");
         let mut saisie = String::new();
         match io::stdin().read_line(&mut saisie) {
             // Ok(0) = fin de l'entrée (plus rien à lire), on arrête
@@ -160,6 +187,22 @@ fn jouer(mut grille: Grille) {
 
         let saisie = saisie.trim();
         if saisie == "q" {
+            break;
+        }
+
+        if saisie == "s" {
+            // On repart des seules cases de départ, pour qu'un mauvais coup du joueur ne gêne pas
+            for ligne in 0..9 {
+                for col in 0..9 {
+                    grille.effacer(ligne, col);
+                }
+            }
+            if grille.resoudre() {
+                println!("Solution :");
+                grille.afficher();
+            } else {
+                println!("Cette grille n'a pas de solution");
+            }
             break;
         }
 
@@ -298,6 +341,30 @@ mod tests {
 
         let complete = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
         assert!(complete.est_terminee());
+    }
+
+    #[test]
+    fn test_resoudre_trouve_la_solution() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        assert!(g.resoudre());
+        let attendue = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
+        assert_eq!(g.cases, attendue.cases);
+    }
+
+    #[test]
+    fn test_resoudre_grille_vide() {
+        let mut g = Grille::nouvelle(String::from("Test"));
+        assert!(g.resoudre());
+        assert!(g.est_terminee());
+    }
+
+    #[test]
+    fn test_resoudre_grille_impossible() {
+        // La case (0, 8) ne peut contenir ni 1-8 (ligne) ni 9 (colonne)
+        let texte = format!("123456780000000009{}", "0".repeat(63));
+        let mut g = Grille::depuis_texte(String::from("Test"), &texte).unwrap();
+        assert!(!g.resoudre());
+        assert_eq!(g.cases[0][8], 0);
     }
 
     #[test]

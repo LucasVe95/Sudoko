@@ -2,7 +2,7 @@
 
 Un logiciel de Sudoku écrit en Rust, développé pour le fun et pour apprendre le langage.
 
-> **État du projet :** en cours de développement. Le jeu est jouable au terminal sur une grille de départ fixe. Il n'y a pas encore de résolution automatique ni de génération de grilles.
+> **État du projet :** en cours de développement. Le jeu est jouable au terminal sur une grille de départ fixe, avec résolution automatique. Il n'y a pas encore de génération de grilles.
 
 ## Fonctionnalités
 
@@ -14,10 +14,10 @@ Déjà présent :
 - Chargement d'une grille de départ depuis un texte de 81 chiffres (0 = case vide)
 - Cases de départ verrouillées, effacement des coups du joueur
 - Boucle de jeu au clavier avec détection de la victoire
+- Résolution automatique par retour sur trace (*backtracking*)
 
 Prévu :
 
-- Résolution automatique
 - Génération de nouvelles grilles
 - Choix de la grille de départ par l'utilisateur
 
@@ -29,6 +29,7 @@ Le programme demande un coup sous la forme `ligne colonne valeur`, avec des num�
 | ------- | -------------------------------------------- |
 | `1 3 4` | Place le 4 en ligne 1, colonne 3             |
 | `1 3 0` | Efface la case en ligne 1, colonne 3         |
+| `s`     | Affiche la solution et termine la partie     |
 | `q`     | Quitte la partie                             |
 
 Un coup est refusé s'il brise une règle du sudoku ou s'il vise une case de la grille de départ.
