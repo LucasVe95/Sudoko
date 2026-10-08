@@ -14,8 +14,24 @@ impl Grille {
     }
     //methode qui lit seulement :&self
     fn afficher(&self) {
-        for ligne in self.cases.iter() {
-            println!("{:?}", ligne);
+        for (i, ligne) in self.cases.iter().enumerate() {
+            // Séparateur horizontal entre les blocs 3×3
+            if i % 3 == 0 && i != 0 {
+                println!("------+-------+-------");
+            }
+            for (j, case) in ligne.iter().enumerate() {
+                // Séparateur vertical entre les blocs 3×3
+                if j % 3 == 0 && j != 0 {
+                    print!("| ");
+                }
+                // Une case vide (0) s'affiche avec un point
+                if *case == 0 {
+                    print!(". ");
+                } else {
+                    print!("{} ", case);
+                }
+            }
+            println!();
         }
     }
 
