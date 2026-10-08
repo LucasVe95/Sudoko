@@ -1,7 +1,11 @@
 //! Un programme qui affiche le jeu de Sudoku
 
+use std::io;
+
 struct Grille {
     cases: [[u8; 9]; 9],
+    // true pour les cases de la grille de départ, que le joueur ne peut pas modifier
+    fixes: [[bool; 9]; 9],
     nom: String,
 }
 impl Grille {
@@ -9,6 +13,7 @@ impl Grille {
     fn nouvelle(nom: String) -> Grille {
         Grille {
             cases: [[0; 9]; 9],
+            fixes: [[false; 9]; 9],
             nom,
         }
     }
@@ -43,6 +48,8 @@ impl Grille {
                         col + 1
                     ));
                 }
+                // Les chiffres du texte de départ sont verrouillés
+                grille.fixes[ligne][col] = true;
             }
         }
 
@@ -98,30 +105,100 @@ impl Grille {
     //methode qui modifie : &mut self
     // Renvoie true si la valeur a été placée, false si le coup est refusé
     fn placer(&mut self, ligne: usize, col: usize, valeur: u8) -> bool {
-        if !self.est_valide(ligne, col, valeur) {
+        if self.fixes[ligne][col] || !self.est_valide(ligne, col, valeur) {
             return false;
         }
         self.cases[ligne][col] = valeur;
         true
+    }
+
+    // Vide une case. Renvoie false si c'est une case de départ
+    fn effacer(&mut self, ligne: usize, col: usize) -> bool {
+        if self.fixes[ligne][col] {
+            return false;
+        }
+        self.cases[ligne][col] = 0;
+        true
+    }
+
+    // La grille est gagnée quand toutes les cases sont remplies.
+    // Chaque chiffre ayant été vérifié par est_valide, il n'y a rien d'autre à contrôler.
+    fn est_terminee(&self) -> bool {
+        self.cases.iter().all(|ligne| ligne.iter().all(|&case| case != 0))
+    }
+}
+
+// Grille de départ : 81 chiffres, 0 = case vide
+const DEPART: &str = "530070000\
+                      600195000\
+                      098000060\
+                      800060003\
+                      400803001\
+                      700020006\
+                      060000280\
+                      000419005\
+                      000080079";
+
+// Boucle de jeu : lit les coups du joueur au clavier jusqu'à la victoire ou 'q'
+fn jouer(mut grille: Grille) {
+    println!("{}", grille.nom);
+    loop {
+        grille.afficher();
+
+        if grille.est_terminee() {
+            println!("Bravo, grille terminée !");
+            break;
+        }
+
+        println!("Coup : ligne colonne valeur (1-9, 0 pour effacer) ou 'q' pour quitter");
+        let mut saisie = String::new();
+        match io::stdin().read_line(&mut saisie) {
+            // Ok(0) = fin de l'entrée (plus rien à lire), on arrête
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+
+        let saisie = saisie.trim();
+        if saisie == "q" {
+            break;
+        }
+
+        // Convertit chaque mot en nombre : un seul échec et on obtient Err
+        let nombres: Result<Vec<usize>, _> = saisie
+            .split_whitespace()
+            .map(|mot| mot.parse::<usize>())
+            .collect();
+        let (ligne, col, valeur) = match nombres {
+            Ok(n) if n.len() == 3 => (n[0], n[1], n[2]),
+            _ => {
+                println!("Saisie invalide : tapez trois nombres, par exemple 1 3 4");
+                continue;
+            }
+        };
+
+        if !(1..=9).contains(&ligne) || !(1..=9).contains(&col) || valeur > 9 {
+            println!("Valeurs hors limites : ligne et colonne de 1 à 9, valeur de 0 à 9");
+            continue;
+        }
+
+        // On passe des numéros humains (1-9) aux index du tableau (0-8)
+        let (ligne, col) = (ligne - 1, col - 1);
+        let accepte = if valeur == 0 {
+            grille.effacer(ligne, col)
+        } else {
+            grille.placer(ligne, col, valeur as u8)
+        };
+        if !accepte {
+            println!("Coup refusé : case de départ ou règle du sudoku brisée");
+        }
     }
 }
 
 fn main() {
     // Affiche le titre du programme
     println!("Sudoku");
-    // Grille de départ : 81 chiffres, 0 = case vide
-    let depart = "530070000\
-                  600195000\
-                  098000060\
-                  800060003\
-                  400803001\
-                  700020006\
-                  060000280\
-                  000419005\
-                  000080079";
-
-    match Grille::depuis_texte(String::from("Partie 1"), depart) {
-        Ok(g) => g.afficher(),
+    match Grille::depuis_texte(String::from("Partie 1"), DEPART) {
+        Ok(g) => jouer(g),
         Err(erreur) => println!("Grille invalide : {}", erreur),
     }
 }
@@ -190,6 +267,37 @@ mod tests {
         // Deux 5 sur la première ligne
         let texte = format!("55{}", "0".repeat(79));
         assert!(Grille::depuis_texte(String::from("Test"), &texte).is_err());
+    }
+
+    const SOLUTION: &str = "534678912672195348198342567859761423\
+                            426853791713924856961537284287419635\
+                            345286179";
+
+    #[test]
+    fn test_case_de_depart_verrouillee() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        // (0, 0) vaut 5 au départ : ni modifiable, ni effaçable
+        assert!(!g.placer(0, 0, 9));
+        assert!(!g.effacer(0, 0));
+        assert_eq!(g.cases[0][0], 5);
+    }
+
+    #[test]
+    fn test_effacer_case_du_joueur() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        // (0, 2) est vide au départ, la solution y met 4
+        assert!(g.placer(0, 2, 4));
+        assert!(g.effacer(0, 2));
+        assert_eq!(g.cases[0][2], 0);
+    }
+
+    #[test]
+    fn test_est_terminee() {
+        let depart = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        assert!(!depart.est_terminee());
+
+        let complete = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
+        assert!(complete.est_terminee());
     }
 
     #[test]
