@@ -16,6 +16,7 @@ Déjà présent :
 - Boucle de jeu au clavier avec détection de la victoire
 - Résolution automatique par retour sur trace (*backtracking*)
 - Génération de grilles aléatoires à solution unique, en trois niveaux de difficulté
+- Indices : le programme révèle une case au hasard avec la bonne valeur
 
 ## Comment jouer
 
@@ -25,6 +26,7 @@ Le programme demande un coup sous la forme `ligne colonne valeur`, avec des num�
 | ------- | -------------------------------------------- |
 | `1 3 4` | Place le 4 en ligne 1, colonne 3             |
 | `1 3 0` | Efface la case en ligne 1, colonne 3         |
+| `h`     | Révèle une case au hasard (indice)           |
 | `s`     | Affiche la solution et termine la partie     |
 | `q`     | Quitte la partie                             |
 
@@ -65,8 +67,9 @@ cargo test
 Sudoko/
 ├── Cargo.toml    # Configuration du projet et dépendances
 ├── src/
-│   ├── main.rs   # Point d'entrée et boucle de jeu au terminal
-│   └── grille.rs # Structure Grille : règles, chargement, résolution, génération, tests
+│   ├── main.rs   # Point d'entrée : choix de la grille selon l'argument
+│   ├── jeu.rs    # Boucle de jeu au terminal et lecture des commandes
+│   └── grille.rs # Structure Grille : règles, chargement, résolution, génération, indices
 ├── LICENSE
 └── README.md
 ```

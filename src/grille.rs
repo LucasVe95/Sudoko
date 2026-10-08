@@ -1,7 +1,8 @@
 //! La grille de Sudoku : règles, chargement, résolution et génération.
 
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 
+#[derive(Clone)]
 pub struct Grille {
     cases: [[u8; 9]; 9],
     // true pour les cases de la grille de départ, que le joueur ne peut pas modifier
@@ -125,6 +126,27 @@ impl Grille {
     // Chaque chiffre ayant été vérifié par est_valide, il n'y a rien d'autre à contrôler.
     pub fn est_terminee(&self) -> bool {
         self.cases.iter().all(|ligne| ligne.iter().all(|&case| case != 0))
+    }
+
+    // Remplit une case vide choisie au hasard avec la bonne valeur.
+    // Renvoie (ligne, col, valeur), ou None s'il n'y a rien à révéler : grille déjà pleine,
+    // ou coups du joueur qui mènent à une impasse (la grille n'est alors pas modifiée).
+    pub fn indice(&mut self) -> Option<(usize, usize, u8)> {
+        // On résout une copie : la grille du joueur reste intacte si la résolution échoue
+        let mut solution = self.clone();
+        if !solution.resoudre() {
+            return None;
+        }
+
+        let vides: Vec<(usize, usize)> = (0..81)
+            .map(|i| (i / 9, i % 9))
+            .filter(|&(ligne, col)| self.cases[ligne][col] == 0)
+            .collect();
+        let &(ligne, col) = vides.choose(&mut rand::rng())?;
+
+        let valeur = solution.cases[ligne][col];
+        self.cases[ligne][col] = valeur;
+        Some((ligne, col, valeur))
     }
 
     // Remplit la grille par retour sur trace (backtracking).
@@ -403,6 +425,42 @@ mod tests {
         let a = Grille::generer(String::from("A"), 40);
         let b = Grille::generer(String::from("B"), 40);
         assert_ne!(a.cases, b.cases);
+    }
+
+    #[test]
+    fn test_indice_revele_la_bonne_valeur() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        let solution = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
+
+        let (ligne, col, valeur) = g.indice().unwrap();
+        assert_eq!(g.cases[ligne][col], valeur);
+        assert_eq!(valeur, solution.cases[ligne][col]);
+        // 51 cases vides au départ, une de moins maintenant
+        let vides = g.cases.iter().flatten().filter(|&&c| c == 0).count();
+        assert_eq!(vides, 50);
+    }
+
+    #[test]
+    fn test_indices_successifs_finissent_la_grille() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        while g.indice().is_some() {}
+        assert!(g.est_terminee());
+    }
+
+    #[test]
+    fn test_indice_grille_pleine() {
+        let mut g = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
+        assert!(g.indice().is_none());
+    }
+
+    #[test]
+    fn test_indice_apres_coup_sans_issue() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        // 1 respecte les règles en (0, 2), mais la solution y met 4 : c'est une impasse
+        assert!(g.placer(0, 2, 1));
+        let avant = g.cases;
+        assert!(g.indice().is_none());
+        assert_eq!(g.cases, avant);
     }
 
     #[test]
