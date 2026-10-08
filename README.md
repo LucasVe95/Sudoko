@@ -63,9 +63,10 @@ cargo test
 
 ```text
 Sudoko/
-├── Cargo.toml    # Configuration du projet
+├── Cargo.toml    # Configuration du projet et dépendances
 ├── src/
-│   └── main.rs   # Point d'entrée et structure Grille
+│   ├── main.rs   # Point d'entrée et boucle de jeu au terminal
+│   └── grille.rs # Structure Grille : règles, chargement, résolution, génération, tests
 ├── LICENSE
 └── README.md
 ```
