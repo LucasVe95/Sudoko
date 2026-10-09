@@ -1,5 +1,6 @@
 //! Un programme qui affiche le jeu de Sudoku
 
+mod classement;
 mod grille;
 mod gui;
 mod jeu;

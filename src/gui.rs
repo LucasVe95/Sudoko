@@ -1,7 +1,12 @@
 //! L'interface graphique (egui) : menu, partie et écran de fin.
 
+use crate::classement::{
+    calculer_score, maintenant, nettoyer_nom, Classement, Entree, PENALITE_ERREUR, PENALITE_INDICE,
+};
 use crate::grille::{Grille, Niveau, Origine};
-use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{
+    self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextEdit, Vec2,
+};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -48,14 +53,19 @@ enum Fin {
 enum Action {
     Menu,
     Rejouer,
+    Classement,
 }
 
 // Ce que le joueur choisit dans le menu
 enum ChoixMenu {
     Reprendre,
     Nouvelle(Origine),
+    Classement,
     Quitter,
 }
+
+// Combien de lignes le classement affiche
+const LIGNES_CLASSEMENT: usize = 10;
 
 // Met une durée en minutes:secondes
 fn formater_duree(duree: Duration) -> String {
@@ -100,6 +110,12 @@ struct Partie {
     // Le chrono : le temps déjà écoulé, plus le temps depuis la dernière reprise (None si en pause)
     ecoule: Duration,
     reprise: Option<Instant>,
+    // Le score d'une victoire (None sans victoire, ou en mode entraînement)
+    score: Option<u32>,
+    // Le nom tapé pour enregistrer le score
+    nom_joueur: String,
+    // Le rang obtenu une fois le score enregistré
+    rang: Option<usize>,
 }
 
 impl Partie {
@@ -115,6 +131,9 @@ impl Partie {
             solution_affichee: false,
             ecoule: Duration::ZERO,
             reprise: Some(Instant::now()),
+            score: None,
+            nom_joueur: String::new(),
+            rang: None,
         }
     }
 
@@ -135,10 +154,46 @@ impl Partie {
     }
 
     // Termine la partie. Une partie déjà terminée garde sa première fin.
+    // Une victoire sur une grille générée donne un score ; l'entraînement n'en donne pas.
     fn terminer(&mut self, fin: Fin) {
         if self.fin.is_none() {
             self.fin = Some(fin);
             self.arreter_chrono();
+            if let (Fin::Victoire, Origine::Niveau(niveau)) = (fin, self.origine) {
+                self.score = Some(calculer_score(niveau, self.duree(), self.erreurs, self.indices));
+            }
+        }
+    }
+
+    // Inscrit le score au classement, avec le nom tapé. Sans effet s'il n'y a pas de score
+    // ou s'il est déjà enregistré.
+    fn enregistrer_score(&mut self, classement: &mut Classement) {
+        let (Some(score), Origine::Niveau(niveau)) = (self.score, self.origine) else {
+            return;
+        };
+        if self.rang.is_some() {
+            return;
+        }
+        let nom = nettoyer_nom(&self.nom_joueur);
+        if nom.is_empty() {
+            self.message = String::from("Entrez un nom pour enregistrer votre score");
+            return;
+        }
+
+        let entree = Entree {
+            nom: nom.clone(),
+            niveau,
+            score,
+            duree_secondes: self.duree().as_secs(),
+            horodatage: maintenant(),
+        };
+        match classement.ajouter(entree) {
+            Ok(rang) => {
+                self.rang = Some(rang);
+                self.nom_joueur = nom;
+                self.message.clear();
+            }
+            Err(erreur) => self.message = erreur,
         }
     }
 
@@ -386,7 +441,12 @@ impl Partie {
     }
 
     // L'écran de fin : résultat, statistiques et choix de la suite
-    fn dessiner_fin(&mut self, ui: &mut egui::Ui, fin: Fin) -> Option<Action> {
+    fn dessiner_fin(
+        &mut self,
+        ui: &mut egui::Ui,
+        fin: Fin,
+        classement: &mut Classement,
+    ) -> Option<Action> {
         let mut action = None;
         let (titre, couleur) = match fin {
             Fin::Victoire => (String::from("Bravo, grille terminée !"), VERT),
@@ -402,6 +462,38 @@ impl Partie {
                 MAX_ERREURS,
                 self.indices
             ));
+
+            if let Some(score) = self.score {
+                ui.label(RichText::new(format!("Score : {}", score)).size(22.0).strong());
+                ui.small(format!(
+                    "Points du niveau − 1 par seconde − {} par erreur − {} par indice",
+                    PENALITE_ERREUR, PENALITE_INDICE
+                ));
+                match self.rang {
+                    Some(rang) => {
+                        ui.label(format!("Score enregistré : n°{} du classement", rang));
+                    }
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.label("Nom");
+                            let champ = ui.add(
+                                TextEdit::singleline(&mut self.nom_joueur)
+                                    .char_limit(20)
+                                    .desired_width(140.0),
+                            );
+                            // Entrée dans le champ valide aussi
+                            let entree_tapee =
+                                champ.lost_focus() && ui.input(|entree| entree.key_pressed(Key::Enter));
+                            if ui.button("Enregistrer").clicked() || entree_tapee {
+                                self.enregistrer_score(classement);
+                            }
+                        });
+                    }
+                }
+            } else if fin == Fin::Victoire {
+                ui.small("Pas de score en mode entraînement");
+            }
+
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("Rejouer").clicked() {
@@ -409,6 +501,9 @@ impl Partie {
                 }
                 if fin == Fin::Defaite && !self.solution_affichee && ui.button("Voir la solution").clicked() {
                     self.afficher_solution();
+                }
+                if ui.button("Classement").clicked() {
+                    action = Some(Action::Classement);
                 }
                 if ui.button("Menu").clicked() {
                     action = Some(Action::Menu);
@@ -419,7 +514,7 @@ impl Partie {
     }
 
     // Dessine toute la partie. Renvoie une action quand le joueur demande autre chose que jouer.
-    fn afficher(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+    fn afficher(&mut self, ui: &mut egui::Ui, classement: &mut Classement) -> Option<Action> {
         let mut action = None;
 
         if self.fin.is_none() {
@@ -453,7 +548,7 @@ impl Partie {
 
         match self.fin {
             Some(fin) => {
-                if let Some(demande) = self.dessiner_fin(ui, fin) {
+                if let Some(demande) = self.dessiner_fin(ui, fin, classement) {
                     action = Some(demande);
                 }
             }
@@ -473,6 +568,7 @@ impl Partie {
 enum Ecran {
     Menu,
     Partie,
+    Classement,
 }
 
 struct Application {
@@ -481,15 +577,25 @@ struct Application {
     // La nouvelle grille arrive par ce canal, générée dans un autre thread
     generation: Option<(Receiver<Grille>, Origine)>,
     erreur: String,
+    classement: Classement,
+    // Le niveau affiché dans le classement (None = tous)
+    filtre: Option<Niveau>,
+    // Le dernier nom utilisé : il est proposé d'office pour les parties suivantes
+    dernier_nom: String,
 }
 
 impl Application {
     fn new() -> Application {
+        let classement = Classement::charger();
+        let dernier_nom = classement.dernier_nom().map(str::to_string).unwrap_or_default();
         Application {
             ecran: Ecran::Menu,
             partie: None,
             generation: None,
             erreur: String::new(),
+            classement,
+            filtre: None,
+            dernier_nom,
         }
     }
 
@@ -520,7 +626,9 @@ impl Application {
     }
 
     fn demarrer(&mut self, grille: Grille, origine: Origine) {
-        self.partie = Some(Partie::new(grille, origine));
+        let mut partie = Partie::new(grille, origine);
+        partie.nom_joueur = self.dernier_nom.clone();
+        self.partie = Some(partie);
         self.ecran = Ecran::Partie;
     }
 
@@ -570,6 +678,10 @@ impl Application {
                 if gros_bouton(ui, "Grille d'entraînement") {
                     choix = Some(ChoixMenu::Nouvelle(Origine::Fixe));
                 }
+                ui.add_space(8.0);
+                if gros_bouton(ui, "Classement") {
+                    choix = Some(ChoixMenu::Classement);
+                }
                 ui.add_space(16.0);
                 if gros_bouton(ui, "Quitter") {
                     choix = Some(ChoixMenu::Quitter);
@@ -590,6 +702,7 @@ impl Application {
                 self.ecran = Ecran::Partie;
             }
             Some(ChoixMenu::Nouvelle(origine)) => self.lancer_partie(origine, ui.ctx()),
+            Some(ChoixMenu::Classement) => self.ecran = Ecran::Classement,
             Some(ChoixMenu::Quitter) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             None => {}
         }
@@ -600,12 +713,21 @@ impl Application {
             self.ecran = Ecran::Menu;
             return;
         };
-        let action = partie.afficher(ui);
+        let action = partie.afficher(ui, &mut self.classement);
+
+        // Une fois le score enregistré, ce nom est proposé pour les parties suivantes
+        if partie.rang.is_some() {
+            self.dernier_nom = partie.nom_joueur.clone();
+        }
 
         match action {
             Some(Action::Menu) => {
                 partie.arreter_chrono();
                 self.ecran = Ecran::Menu;
+            }
+            Some(Action::Classement) => {
+                partie.arreter_chrono();
+                self.ecran = Ecran::Classement;
             }
             Some(Action::Rejouer) => {
                 let origine = partie.origine;
@@ -619,6 +741,51 @@ impl Application {
                 ui.spinner();
                 ui.label("Génération de la grille...");
             });
+        }
+    }
+
+    fn dessiner_classement(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(10.0);
+            ui.heading("Classement");
+        });
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.filtre, None, "Tous");
+            for niveau in Niveau::TOUS {
+                ui.selectable_value(&mut self.filtre, Some(niveau), niveau.libelle());
+            }
+        });
+        ui.add_space(8.0);
+
+        let meilleurs = self.classement.meilleurs(self.filtre, LIGNES_CLASSEMENT);
+        if meilleurs.is_empty() {
+            ui.label("Aucun score pour l'instant : gagnez une partie !");
+        } else {
+            egui::Grid::new("tableau_classement")
+                .striped(true)
+                .num_columns(5)
+                .spacing([18.0, 6.0])
+                .show(ui, |ui| {
+                    for titre in ["N°", "Joueur", "Niveau", "Score", "Temps"] {
+                        ui.label(RichText::new(titre).strong());
+                    }
+                    ui.end_row();
+                    for (rang, entree) in meilleurs.iter().enumerate() {
+                        ui.label((rang + 1).to_string());
+                        ui.label(entree.nom.as_str());
+                        ui.label(entree.niveau.libelle());
+                        ui.label(entree.score.to_string());
+                        ui.label(formater_duree(Duration::from_secs(entree.duree_secondes)));
+                        ui.end_row();
+                    }
+                });
+        }
+
+        ui.add_space(16.0);
+        if ui.button("Retour au menu").clicked() {
+            self.ecran = Ecran::Menu;
         }
     }
 }
@@ -636,6 +803,7 @@ impl eframe::App for Application {
         egui::CentralPanel::default().show(ui, |ui| match self.ecran {
             Ecran::Menu => self.dessiner_menu(ui),
             Ecran::Partie => self.dessiner_partie(ui),
+            Ecran::Classement => self.dessiner_classement(ui),
         });
     }
 }
@@ -789,6 +957,121 @@ mod tests {
         assert_eq!(partie.duree(), duree);
         partie.demarrer_chrono();
         assert!(partie.reprise.is_some());
+    }
+
+    // Une partie sur la grille fixe, mais étiquetée comme une partie de niveau Moyen
+    // pour qu'une victoire donne un score
+    fn partie_moyenne() -> Partie {
+        let grille = Grille::creer(Origine::Fixe).unwrap();
+        Partie::new(grille, Origine::Niveau(Niveau::Moyen))
+    }
+
+    // Joue tous les bons chiffres : la partie est gagnée sans erreur ni indice
+    fn gagner(partie: &mut Partie) {
+        let mut solution = partie.grille.clone();
+        assert!(solution.remplir_solution());
+        for ligne in 0..9 {
+            for col in 0..9 {
+                if partie.grille.valeur(ligne, col) == 0 {
+                    jouer(partie, ligne, col, solution.valeur(ligne, col));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_victoire_sur_niveau_donne_un_score() {
+        let mut partie = partie_moyenne();
+        gagner(&mut partie);
+        assert_eq!(partie.fin, Some(Fin::Victoire));
+        let score = partie.score.expect("une victoire sur un niveau donne un score");
+        // 2000 points moins quelques secondes tout au plus
+        assert!(score <= 2000 && score > 1900);
+    }
+
+    #[test]
+    fn test_le_score_tient_compte_des_erreurs_et_des_indices() {
+        let mut partie = partie_moyenne();
+        jouer(&mut partie, 0, 2, 5); // erreur : brise une règle
+        partie.demander_indice();
+        gagner(&mut partie);
+        let score = partie.score.unwrap();
+        // 2000 - 100 (erreur) - 150 (indice) - quelques secondes
+        assert!(score <= 1750 && score > 1650);
+    }
+
+    #[test]
+    fn test_pas_de_score_a_l_entrainement() {
+        let mut partie = partie_fixe();
+        gagner(&mut partie);
+        assert_eq!(partie.fin, Some(Fin::Victoire));
+        assert_eq!(partie.score, None);
+    }
+
+    #[test]
+    fn test_pas_de_score_en_cas_de_defaite_ou_d_abandon() {
+        let mut perdue = partie_moyenne();
+        for _ in 0..MAX_ERREURS {
+            jouer(&mut perdue, 0, 2, 5);
+        }
+        assert_eq!(perdue.fin, Some(Fin::Defaite));
+        assert_eq!(perdue.score, None);
+
+        let mut abandonnee = partie_moyenne();
+        abandonnee.afficher_solution();
+        assert_eq!(abandonnee.score, None);
+    }
+
+    #[test]
+    fn test_enregistrer_le_score() {
+        let chemin = crate::classement::chemin_temporaire();
+        let mut classement = Classement::depuis_fichier(chemin.clone());
+        let mut partie = partie_moyenne();
+        gagner(&mut partie);
+        partie.nom_joueur = String::from("  Lucas\t ");
+
+        partie.enregistrer_score(&mut classement);
+        assert_eq!(partie.rang, Some(1));
+        assert_eq!(partie.nom_joueur, "Lucas");
+        let meilleurs = classement.meilleurs(None, 10);
+        assert_eq!(meilleurs.len(), 1);
+        assert_eq!(meilleurs[0].nom, "Lucas");
+        assert_eq!(meilleurs[0].niveau, Niveau::Moyen);
+        assert_eq!(Some(meilleurs[0].score), partie.score);
+
+        // Un deuxième clic ne crée pas de doublon
+        partie.enregistrer_score(&mut classement);
+        assert_eq!(classement.meilleurs(None, 10).len(), 1);
+
+        let _ = std::fs::remove_file(&chemin);
+        let _ = std::fs::remove_file(chemin.with_extension("tmp"));
+    }
+
+    #[test]
+    fn test_enregistrer_refuse_un_nom_vide() {
+        let chemin = crate::classement::chemin_temporaire();
+        let mut classement = Classement::depuis_fichier(chemin.clone());
+        let mut partie = partie_moyenne();
+        gagner(&mut partie);
+        partie.nom_joueur = String::from("   ");
+
+        partie.enregistrer_score(&mut classement);
+        assert_eq!(partie.rang, None);
+        assert!(partie.message.contains("nom"));
+        assert!(classement.meilleurs(None, 10).is_empty());
+    }
+
+    #[test]
+    fn test_enregistrer_sans_score_ne_fait_rien() {
+        let chemin = crate::classement::chemin_temporaire();
+        let mut classement = Classement::depuis_fichier(chemin);
+        let mut partie = partie_fixe();
+        gagner(&mut partie);
+        partie.nom_joueur = String::from("Lucas");
+
+        partie.enregistrer_score(&mut classement);
+        assert_eq!(partie.rang, None);
+        assert!(classement.meilleurs(None, 10).is_empty());
     }
 
     #[test]

@@ -21,6 +21,13 @@ impl Niveau {
         }
     }
 
+    // Retrouve un niveau à partir de son libellé (utilisé pour relire le classement)
+    pub fn depuis_libelle(libelle: &str) -> Option<Niveau> {
+        Niveau::TOUS
+            .into_iter()
+            .find(|niveau| niveau.libelle() == libelle)
+    }
+
     // Plus on retire de cases, plus la grille est difficile
     fn cases_a_retirer(self) -> usize {
         match self {

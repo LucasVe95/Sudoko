@@ -21,6 +21,7 @@ Déjà présent :
 - Menu : nouvelle partie en trois niveaux, grille d'entraînement, reprise de la partie en cours
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
+- Score à chaque victoire et classement des meilleurs scores, conservé d'une session à l'autre
 
 ## Comment jouer
 
@@ -40,7 +41,28 @@ Les chiffres de départ sont en noir et ceux du joueur en bleu. Les cases qui co
 
 **Erreurs et défaite.** Un chiffre qui n'est pas celui de la solution compte comme une erreur, qu'il brise une règle du sudoku (le coup est alors refusé) ou non (le chiffre est placé, mais s'affiche en rouge). Au bout de 3 erreurs, la partie est perdue.
 
-**Fin de partie.** Un écran de fin indique si la partie est gagnée, perdue ou abandonnée, avec le temps, les erreurs et les indices utilisés. Il propose de rejouer, de retourner au menu et, après une défaite, de voir la solution.
+**Fin de partie.** Un écran de fin indique si la partie est gagnée, perdue ou abandonnée, avec le temps, les erreurs et les indices utilisés. Il propose de rejouer, d'ouvrir le classement, de retourner au menu et, après une défaite, de voir la solution.
+
+**Score.** Seule une victoire sur une grille générée donne un score (la grille d'entraînement n'en donne pas) :
+
+```text
+score = points du niveau − 1 par seconde − 100 par erreur − 150 par indice   (jamais en dessous de 0)
+```
+
+| Niveau    | Points de départ |
+| --------- | ---------------- |
+| Facile    | 1000             |
+| Moyen     | 2000             |
+| Difficile | 3000             |
+
+**Classement.** À la victoire, tapez votre nom (20 caractères au plus) puis `Enregistrer` ou `Entrée`. Le nom du dernier joueur est proposé d'office. Le menu donne accès au `Classement` : les 10 meilleurs scores, tous niveaux confondus ou par niveau. À score égal, la partie la plus rapide passe devant.
+
+Le classement est enregistré dans un fichier texte, en dehors du dépôt, et il est donc conservé d'une session à l'autre :
+
+- Windows : `%APPDATA%\Sudoko\scores.txt`
+- Linux et macOS : `~/.local/share/Sudoko/scores.txt`
+
+Supprimer ce fichier remet le classement à zéro. Le terminal ne gère ni score ni classement.
 
 ### Au terminal
 
@@ -102,7 +124,8 @@ Sudoko/
 ├── Cargo.toml    # Configuration du projet et dépendances
 ├── src/
 │   ├── main.rs   # Point d'entrée : choix de la grille et de l'interface selon les arguments
-│   ├── gui.rs    # Interface graphique (egui) : menu, partie, erreurs, chrono, écran de fin
+│   ├── gui.rs    # Interface graphique (egui) : menu, partie, erreurs, chrono, écran de fin, classement
+│   ├── classement.rs # Calcul du score et classement enregistré dans un fichier
 │   ├── jeu.rs    # Boucle de jeu au terminal et lecture des commandes
 │   └── grille.rs # Structure Grille : règles, chargement, résolution, génération, indices
 ├── LICENSE
