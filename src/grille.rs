@@ -3,7 +3,7 @@
 use rand::seq::{IndexedRandom, SliceRandom};
 
 // Niveau de difficulté d'une grille générée
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Niveau {
     Facile,
     Moyen,
@@ -31,11 +31,20 @@ impl Niveau {
     }
 }
 
+// D'où vient la grille : générée au hasard à un niveau donné, ou la grille fixe d'entraînement
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Origine {
+    Niveau(Niveau),
+    Fixe,
+}
+
 #[derive(Clone)]
 pub struct Grille {
     cases: [[u8; 9]; 9],
     // true pour les cases de la grille de départ, que le joueur ne peut pas modifier
     fixes: [[bool; 9]; 9],
+    // La solution, quand on la connaît : elle sert à dire si un chiffre du joueur est correct
+    solution: Option<[[u8; 9]; 9]>,
     pub nom: String,
 }
 impl Grille {
@@ -44,7 +53,16 @@ impl Grille {
         Grille {
             cases: [[0; 9]; 9],
             fixes: [[false; 9]; 9],
+            solution: None,
             nom,
+        }
+    }
+
+    // Crée la grille correspondant à l'origine demandée
+    pub fn creer(origine: Origine) -> Result<Grille, String> {
+        match origine {
+            Origine::Fixe => Grille::depuis_texte(String::from("Grille d'entraînement"), DEPART),
+            Origine::Niveau(niveau) => Ok(Grille::generer_niveau(niveau)),
         }
     }
     // Construit une grille à partir d'un texte de 81 chiffres (0 = case vide)
@@ -81,6 +99,13 @@ impl Grille {
                 // Les chiffres du texte de départ sont verrouillés
                 grille.fixes[ligne][col] = true;
             }
+        }
+
+        // On garde la solution pour pouvoir dire si un chiffre du joueur est correct.
+        // Si la grille a plusieurs solutions, on retient la première trouvée.
+        let mut copie = grille.clone();
+        if copie.remplir_solution() {
+            grille.solution = Some(copie.cases);
         }
 
         Ok(grille)
@@ -149,6 +174,15 @@ impl Grille {
         }
         self.cases[ligne][col] = 0;
         true
+    }
+
+    // true si `valeur` est le chiffre de la solution pour cette case.
+    // Si la solution n'est pas connue, on ne peut pas juger : on répond true.
+    pub fn est_correct(&self, ligne: usize, col: usize, valeur: u8) -> bool {
+        match self.solution {
+            Some(solution) => solution[ligne][col] == valeur,
+            None => true,
+        }
     }
 
     // Valeur d'une case : 0 si elle est vide
@@ -274,6 +308,8 @@ impl Grille {
         let mut rng = rand::rng();
         let mut grille = Grille::nouvelle(nom);
         grille.resoudre_avec(&mut |chiffres| chiffres.shuffle(&mut rng));
+        // La grille complète est la solution : on la retient avant de retirer des cases
+        let solution = grille.cases;
 
         // Les 81 positions, dans un ordre aléatoire
         let mut positions: Vec<(usize, usize)> = (0..81).map(|i| (i / 9, i % 9)).collect();
@@ -300,6 +336,7 @@ impl Grille {
                 grille.fixes[ligne][col] = grille.cases[ligne][col] != 0;
             }
         }
+        grille.solution = Some(solution);
         grille
     }
 }
@@ -545,6 +582,36 @@ mod tests {
         assert_eq!(g.nom, "Partie facile");
         let vides = g.cases.iter().flatten().filter(|&&c| c == 0).count();
         assert!(vides > 0 && vides <= 35);
+    }
+
+    #[test]
+    fn test_est_correct() {
+        let g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        // La solution met 4 en (0, 2)
+        assert!(g.est_correct(0, 2, 4));
+        assert!(!g.est_correct(0, 2, 1));
+        // Sans solution connue, on ne juge pas
+        let vide = Grille::nouvelle(String::from("Test"));
+        assert!(vide.est_correct(0, 0, 7));
+    }
+
+    #[test]
+    fn test_generer_connait_sa_solution() {
+        let mut g = Grille::generer(String::from("Test"), 40);
+        assert!(g.remplir_solution());
+        for ligne in 0..9 {
+            for col in 0..9 {
+                assert!(g.est_correct(ligne, col, g.valeur(ligne, col)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_creer_selon_l_origine() {
+        let fixe = Grille::creer(Origine::Fixe).unwrap();
+        assert_eq!(fixe.valeur(0, 0), 5);
+        let facile = Grille::creer(Origine::Niveau(Niveau::Facile)).unwrap();
+        assert_eq!(facile.nom, "Partie facile");
     }
 
     #[test]

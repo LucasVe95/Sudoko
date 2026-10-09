@@ -4,16 +4,16 @@ mod grille;
 mod gui;
 mod jeu;
 
-use grille::{Grille, Niveau, DEPART};
+use grille::{Grille, Niveau, Origine};
 
-// Choisit la grille de départ selon le mot tapé : facile, moyen, difficile ou fixe
-fn choisir_grille(choix: Option<&str>) -> Result<Grille, String> {
-    match choix {
-        Some("fixe") => Grille::depuis_texte(String::from("Grille fixe"), DEPART),
-        Some("facile") => Ok(Grille::generer_niveau(Niveau::Facile)),
-        None | Some("moyen") => Ok(Grille::generer_niveau(Niveau::Moyen)),
-        Some("difficile") => Ok(Grille::generer_niveau(Niveau::Difficile)),
-        Some(autre) => Err(format!(
+// Traduit le mot tapé sur la ligne de commande : facile, moyen, difficile ou fixe
+fn lire_origine(mot: &str) -> Result<Origine, String> {
+    match mot {
+        "facile" => Ok(Origine::Niveau(Niveau::Facile)),
+        "moyen" => Ok(Origine::Niveau(Niveau::Moyen)),
+        "difficile" => Ok(Origine::Niveau(Niveau::Difficile)),
+        "fixe" => Ok(Origine::Fixe),
+        autre => Err(format!(
             "Mode inconnu : '{}' (choix : facile, moyen, difficile, fixe)",
             autre
         )),
@@ -29,18 +29,29 @@ fn main() {
         arguments.remove(0);
     }
 
-    let grille = match choisir_grille(arguments.first().map(String::as_str)) {
-        Ok(grille) => grille,
-        Err(erreur) => {
-            println!("{}", erreur);
-            return;
-        }
+    // Sans mot qui désigne une grille, la fenêtre s'ouvre sur le menu
+    let origine = match arguments.first() {
+        Some(mot) => match lire_origine(mot) {
+            Ok(origine) => Some(origine),
+            Err(erreur) => {
+                println!("{}", erreur);
+                return;
+            }
+        },
+        None => None,
     };
 
     if terminal {
-        println!("Sudoku");
-        jeu::jouer(grille);
-    } else if let Err(erreur) = gui::lancer(grille) {
+        // Au terminal, il n'y a pas de menu : une grille moyenne par défaut
+        let origine = origine.unwrap_or(Origine::Niveau(Niveau::Moyen));
+        match Grille::creer(origine) {
+            Ok(grille) => {
+                println!("Sudoku");
+                jeu::jouer(grille);
+            }
+            Err(erreur) => println!("{}", erreur),
+        }
+    } else if let Err(erreur) = gui::lancer(origine) {
         println!("Impossible d'ouvrir la fenêtre : {}", erreur);
     }
 }
