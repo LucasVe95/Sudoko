@@ -20,6 +20,7 @@ Déjà présent :
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
+- Sauvegarde automatique de la partie en cours : on ferme le jeu et on reprend plus tard
 - Jeu au terminal, pour toutes les tailles
 
 ## Comment jouer
@@ -46,6 +47,7 @@ Pendant la partie :
 - Les boutons `1` jusqu'au côté de la grille et `Effacer` font la même chose à la souris.
 - `Indice` révèle une case au hasard, `Solution` affiche la grille complète et termine la partie.
 - `Menu` met la partie en pause (le chronomètre s'arrête) et revient au menu.
+- Fermer la fenêtre en pleine partie ne la perd pas : voir *Sauvegarde* ci-dessous.
 
 Les chiffres de départ sont en noir et ceux du joueur en bleu. Les cases qui contiennent le même chiffre que la case choisie sont mises en valeur.
 
@@ -68,6 +70,11 @@ Une grande grille prend plus de temps : les points de départ et les pénalités
 | 9×9    | 1000   | 2000  | 3000      | 100                 | 150                 |
 | 12×12  | 2500   | 5000  | 7500      | 250                 | 375                 |
 | 16×16  | 5000   | 10000 | 15000     | 500                 | 750                 |
+
+**Sauvegarde.** La partie en cours est enregistrée à chaque coup, quand on retourne au menu et quand on ferme la fenêtre, avec son chronomètre. À la prochaine ouverture, le menu propose `Reprendre la partie` (avec le nom de la grille et le temps déjà joué). La sauvegarde disparaît quand la partie se termine (victoire, défaite ou abandon). Lancer une nouvelle partie remplace la sauvegarde précédente, y compris avec `cargo run -- facile`. Un fichier abîmé est ignoré. Le terminal ne gère pas la sauvegarde.
+
+- Windows : `%APPDATA%\Sudoko\partie.txt`
+- Linux et macOS : `~/.local/share/Sudoko/partie.txt`
 
 **Classement.** À la victoire, tapez votre nom (20 caractères au plus) puis `Enregistrer` ou `Entrée`. Le nom du dernier joueur est proposé d'office. Le menu donne accès au `Classement` : les 10 meilleurs scores d'une taille de grille, tous niveaux confondus ou par niveau. Chaque taille a son propre classement, car les scores de tailles différentes ne se comparent pas. À score égal, la partie la plus rapide passe devant.
 
@@ -155,6 +162,7 @@ Sudoko/
 │   ├── gui.rs    # Interface graphique (egui) : menu, partie, erreurs, chrono, écran de fin, classement
 │   ├── classement.rs # Calcul du score et classement enregistré dans un fichier
 │   ├── jeu.rs    # Boucle de jeu au terminal et lecture des commandes
+│   ├── sauvegarde.rs # Sauvegarde et reprise de la partie en cours (fichier texte)
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
 │   └── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
 ├── LICENSE

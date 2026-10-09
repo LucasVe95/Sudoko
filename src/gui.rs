@@ -4,6 +4,7 @@ use crate::classement::{
     calculer_score, maintenant, nettoyer_nom, penalite_erreur, penalite_indice, Classement, Entree,
 };
 use crate::grille::{Grille, Niveau, Origine, Taille};
+use crate::sauvegarde::{PartieSauvee, Sauvegarde};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextEdit, Vec2,
 };
@@ -173,6 +174,8 @@ struct Partie {
     rang: Option<usize>,
     // Le premier chiffre d'un nombre à deux chiffres, avec l'instant où il a été tapé
     tampon: Option<(u8, f64)>,
+    // true quand la partie a changé depuis la dernière sauvegarde
+    modifiee: bool,
 }
 
 impl Partie {
@@ -192,6 +195,32 @@ impl Partie {
             nom_joueur: String::new(),
             rang: None,
             tampon: None,
+            modifiee: false,
+        }
+    }
+
+    // Reprend une partie enregistrée, en pause : le chrono repart quand on la reprend.
+    // Une sauvegarde déjà finie (grille pleine, trop d'erreurs) ne se reprend pas.
+    fn restaurer(sauvee: PartieSauvee) -> Option<Partie> {
+        if sauvee.erreurs >= MAX_ERREURS || sauvee.grille.est_terminee() {
+            return None;
+        }
+        let mut partie = Partie::new(sauvee.grille, sauvee.origine);
+        partie.erreurs = sauvee.erreurs;
+        partie.indices = sauvee.indices;
+        partie.ecoule = Duration::from_secs(sauvee.secondes);
+        partie.reprise = None;
+        Some(partie)
+    }
+
+    // Ce qui est enregistré pour pouvoir reprendre la partie
+    fn vers_sauvegarde(&self) -> PartieSauvee {
+        PartieSauvee {
+            grille: self.grille.clone(),
+            origine: self.origine,
+            erreurs: self.erreurs,
+            indices: self.indices,
+            secondes: self.duree().as_secs(),
         }
     }
 
@@ -216,6 +245,7 @@ impl Partie {
     fn terminer(&mut self, fin: Fin) {
         if self.fin.is_none() {
             self.fin = Some(fin);
+            self.modifiee = true;
             self.arreter_chrono();
             if let (Fin::Victoire, Origine::Niveau(niveau, taille)) = (fin, self.origine) {
                 self.score = Some(calculer_score(
@@ -287,6 +317,7 @@ impl Partie {
             self.message = String::from("Cette case fait partie de la grille de départ");
             return;
         }
+        self.modifiee = true;
         if valeur == 0 {
             self.grille.effacer(ligne, col);
             self.message.clear();
@@ -332,6 +363,7 @@ impl Partie {
         match self.grille.indice() {
             Some((ligne, col, valeur)) => {
                 self.indices += 1;
+                self.modifiee = true;
                 self.selection = Some((ligne, col));
                 self.message = format!(
                     "Indice : {} en ligne {}, colonne {}",
@@ -719,15 +751,23 @@ struct Application {
     filtre: Option<Niveau>,
     // Le dernier nom utilisé : il est proposé d'office pour les parties suivantes
     dernier_nom: String,
+    // Le fichier où la partie en cours est enregistrée
+    sauvegarde: Sauvegarde,
 }
 
 impl Application {
     fn new() -> Application {
         let classement = Classement::charger();
         let dernier_nom = classement.dernier_nom().map(str::to_string).unwrap_or_default();
+        let sauvegarde = Sauvegarde::par_defaut();
+        // Une partie laissée en cours à la dernière fermeture est proposée dans le menu
+        let partie = sauvegarde.charger().and_then(Partie::restaurer).map(|mut partie| {
+            partie.nom_joueur = dernier_nom.clone();
+            partie
+        });
         Application {
             ecran: Ecran::Menu,
-            partie: None,
+            partie,
             generation: None,
             erreur: String::new(),
             classement,
@@ -735,6 +775,7 @@ impl Application {
             taille_classement: Taille::Neuf,
             filtre: None,
             dernier_nom,
+            sauvegarde,
         }
     }
 
@@ -769,6 +810,21 @@ impl Application {
         partie.nom_joueur = self.dernier_nom.clone();
         self.partie = Some(partie);
         self.ecran = Ecran::Partie;
+        // La nouvelle partie remplace tout de suite l'ancienne sauvegarde
+        self.sauvegarder_partie();
+    }
+
+    // Enregistre la partie en cours, ou efface la sauvegarde si elle est terminée
+    fn sauvegarder_partie(&mut self) {
+        let Some(partie) = self.partie.as_mut() else {
+            return;
+        };
+        partie.modifiee = false;
+        if partie.fin.is_some() {
+            self.sauvegarde.supprimer();
+        } else if let Err(erreur) = self.sauvegarde.enregistrer(&partie.vers_sauvegarde()) {
+            partie.message = erreur;
+        }
     }
 
     // Si la grille générée est arrivée, la partie commence
@@ -806,6 +862,9 @@ impl Application {
             ui.add_enabled_ui(!occupe, |ui| {
                 if reprise_possible && gros_bouton(ui, "Reprendre la partie") {
                     choix = Some(ChoixMenu::Reprendre);
+                }
+                if let Some(partie) = self.partie.as_ref().filter(|partie| partie.fin.is_none()) {
+                    ui.small(format!("{} - {}", partie.grille.nom, formater_duree(partie.duree())));
                 }
                 ui.add_space(8.0);
                 ui.label("Nouvelle partie");
@@ -862,6 +921,9 @@ impl Application {
             return;
         };
         let action = partie.afficher(ui, &mut self.classement);
+        // On enregistre à chaque coup, et quand on quitte la partie (le chrono est alors à jour)
+        let a_sauvegarder =
+            partie.modifiee || matches!(action, Some(Action::Menu | Action::Classement));
 
         // Une fois le score enregistré, ce nom est proposé pour les parties suivantes
         if partie.rang.is_some() {
@@ -884,6 +946,10 @@ impl Application {
                 self.lancer_partie(origine, ui.ctx());
             }
             None => {}
+        }
+
+        if a_sauvegarder {
+            self.sauvegarder_partie();
         }
 
         if self.generation.is_some() {
@@ -968,6 +1034,14 @@ impl eframe::App for Application {
             Ecran::Partie => self.dessiner_partie(ui),
             Ecran::Classement => self.dessiner_classement(ui),
         });
+    }
+
+    // La fenêtre se ferme : la partie en cours est enregistrée avec son temps exact
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(partie) = self.partie.as_mut() {
+            partie.arreter_chrono();
+        }
+        self.sauvegarder_partie();
     }
 }
 
@@ -1382,5 +1456,61 @@ mod tests {
         assert_eq!(formater_duree(Duration::ZERO), "00:00");
         assert_eq!(formater_duree(Duration::from_secs(75)), "01:15");
         assert_eq!(formater_duree(Duration::from_secs(3600)), "60:00");
+    }
+
+    #[test]
+    fn test_une_partie_restauree_reprend_ou_elle_en_etait() {
+        let mut partie = partie_moyenne();
+        jouer(&mut partie, 0, 2, 5); // erreur : brise une règle
+        partie.demander_indice();
+        partie.ecoule = Duration::from_secs(120);
+
+        let restauree = Partie::restaurer(partie.vers_sauvegarde()).unwrap();
+        assert_eq!(restauree.erreurs, 1);
+        assert_eq!(restauree.indices, 1);
+        assert_eq!(restauree.grille.cases(), partie.grille.cases());
+        assert_eq!(restauree.origine, partie.origine);
+        assert_eq!(restauree.fin, None);
+        assert!(!restauree.modifiee);
+        assert!(restauree.duree() >= Duration::from_secs(120));
+
+        // La partie reprise est en pause : le chrono repart à la reprise
+        assert!(restauree.reprise.is_none());
+        let mut restauree = restauree;
+        restauree.demarrer_chrono();
+        assert!(restauree.reprise.is_some());
+    }
+
+    #[test]
+    fn test_une_partie_finie_ne_se_restaure_pas() {
+        let mut gagnee = partie_moyenne();
+        gagner(&mut gagnee);
+        assert!(Partie::restaurer(gagnee.vers_sauvegarde()).is_none());
+
+        let mut perdue = partie_moyenne();
+        perdue.erreurs = MAX_ERREURS;
+        assert!(Partie::restaurer(perdue.vers_sauvegarde()).is_none());
+    }
+
+    #[test]
+    fn test_les_changements_marquent_la_partie_a_sauvegarder() {
+        let mut partie = partie_moyenne();
+        assert!(!partie.modifiee);
+
+        // Un clic sans coup ne change rien
+        partie.selection = Some((0, 0));
+        assert!(!partie.modifiee);
+
+        jouer(&mut partie, 0, 2, 4);
+        assert!(partie.modifiee);
+
+        partie.modifiee = false;
+        partie.demander_indice();
+        assert!(partie.modifiee);
+
+        partie.modifiee = false;
+        partie.afficher_solution();
+        assert!(partie.modifiee);
+        assert!(partie.fin.is_some());
     }
 }

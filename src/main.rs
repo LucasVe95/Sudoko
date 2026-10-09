@@ -4,6 +4,7 @@ mod classement;
 mod grille;
 mod gui;
 mod jeu;
+mod sauvegarde;
 mod solveur;
 
 use grille::{Grille, Niveau, Origine, Taille};

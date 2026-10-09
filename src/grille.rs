@@ -146,6 +146,68 @@ impl Grille {
         self.taille
     }
 
+    // Les cases ligne par ligne (0 = vide), pour enregistrer la partie
+    pub fn cases(&self) -> &[u8] {
+        &self.cases
+    }
+
+    // Les cases de départ, dans le même ordre que `cases`
+    pub fn fixes(&self) -> &[bool] {
+        &self.fixes
+    }
+
+    // La solution, quand on la connaît
+    pub fn solution(&self) -> Option<&[u8]> {
+        self.solution.as_deref()
+    }
+
+    // Reconstruit une grille à partir de ce qui a été enregistré. Le fichier a pu être abîmé
+    // ou modifié à la main : on refuse tout ce qui romprait les règles de la grille,
+    // plutôt que de planter plus tard.
+    pub fn restaurer(
+        taille: Taille,
+        nom: String,
+        cases: Vec<u8>,
+        fixes: Vec<bool>,
+        solution: Option<Vec<u8>>,
+    ) -> Result<Grille, String> {
+        let nombre = taille.cases();
+        if cases.len() != nombre || fixes.len() != nombre {
+            return Err(format!("{} cases attendues", nombre));
+        }
+        // Pas de chiffre hors limites ni de doublon dans une ligne, une colonne ou un bloc
+        let (cote, bloc_h, bloc_l) = (taille.cote(), taille.bloc_h(), taille.bloc_l());
+        if Solveur::new(cote, bloc_h, bloc_l, &cases).is_none() {
+            return Err(String::from("Cases invalides"));
+        }
+        // Une case de départ n'est jamais vide
+        if cases.iter().zip(&fixes).any(|(&valeur, &fixe)| fixe && valeur == 0) {
+            return Err(String::from("Case de départ vide"));
+        }
+        if let Some(solution) = &solution {
+            // La solution est une grille pleine et valide, qui garde les cases de départ
+            let complete = solution.len() == nombre
+                && solution.iter().all(|&valeur| valeur != 0)
+                && Solveur::new(cote, bloc_h, bloc_l, solution).is_some();
+            let garde_les_departs = cases
+                .iter()
+                .zip(&fixes)
+                .zip(solution)
+                .all(|((&valeur, &fixe), &attendu)| !fixe || valeur == attendu);
+            if !complete || !garde_les_departs {
+                return Err(String::from("Solution invalide"));
+            }
+        }
+
+        Ok(Grille {
+            taille,
+            cases,
+            fixes,
+            solution,
+            nom,
+        })
+    }
+
     // L'indice d'une case dans les tableaux `cases` et `fixes`
     fn position(&self, ligne: usize, col: usize) -> usize {
         ligne * self.taille.cote() + col

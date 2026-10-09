@@ -1,6 +1,7 @@
 //! Le score d'une partie et le classement des meilleurs scores, enregistré dans un fichier.
 
 use crate::grille::{Niveau, Taille};
+use crate::sauvegarde::dossier_donnees;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -132,17 +133,10 @@ impl Entree {
     }
 }
 
-// Où le classement est enregistré : le dossier de données de l'utilisateur,
-// pas le dossier du projet (le fichier ne risque donc pas d'être commité)
+// Où le classement est enregistré : dans le dossier de données de l'utilisateur
 fn chemin_par_defaut() -> PathBuf {
-    let dossier = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|maison| PathBuf::from(maison).join(".local").join("share"))
-        });
-    match dossier {
-        Some(dossier) => dossier.join("Sudoko").join("scores.txt"),
+    match dossier_donnees() {
+        Some(dossier) => dossier.join("scores.txt"),
         None => PathBuf::from("sudoko_scores.txt"),
     }
 }
