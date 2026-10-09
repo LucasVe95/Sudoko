@@ -52,13 +52,7 @@ fn lire_coup(texte: &str) -> Result<Commande, String> {
 
 // Affiche la solution de la grille de départ
 fn afficher_solution(grille: &mut Grille) {
-    // On repart des seules cases de départ, pour qu'un mauvais coup du joueur ne gêne pas
-    for ligne in 0..9 {
-        for col in 0..9 {
-            grille.effacer(ligne, col);
-        }
-    }
-    if grille.resoudre() {
+    if grille.remplir_solution() {
         println!("Solution :");
         grille.afficher();
     } else {

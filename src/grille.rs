@@ -2,6 +2,35 @@
 
 use rand::seq::{IndexedRandom, SliceRandom};
 
+// Niveau de difficulté d'une grille générée
+#[derive(Clone, Copy, PartialEq)]
+pub enum Niveau {
+    Facile,
+    Moyen,
+    Difficile,
+}
+
+impl Niveau {
+    pub const TOUS: [Niveau; 3] = [Niveau::Facile, Niveau::Moyen, Niveau::Difficile];
+
+    pub fn libelle(self) -> &'static str {
+        match self {
+            Niveau::Facile => "Facile",
+            Niveau::Moyen => "Moyen",
+            Niveau::Difficile => "Difficile",
+        }
+    }
+
+    // Plus on retire de cases, plus la grille est difficile
+    fn cases_a_retirer(self) -> usize {
+        match self {
+            Niveau::Facile => 35,
+            Niveau::Moyen => 45,
+            Niveau::Difficile => 55,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Grille {
     cases: [[u8; 9]; 9],
@@ -122,6 +151,28 @@ impl Grille {
         true
     }
 
+    // Valeur d'une case : 0 si elle est vide
+    pub fn valeur(&self, ligne: usize, col: usize) -> u8 {
+        self.cases[ligne][col]
+    }
+
+    // true si la case fait partie de la grille de départ
+    pub fn est_fixe(&self, ligne: usize, col: usize) -> bool {
+        self.fixes[ligne][col]
+    }
+
+    // Efface tous les coups du joueur puis remplit la grille avec la solution.
+    // Renvoie false si la grille de départ n'a pas de solution.
+    pub fn remplir_solution(&mut self) -> bool {
+        // On repart des seules cases de départ, pour qu'un mauvais coup du joueur ne gêne pas
+        for ligne in 0..9 {
+            for col in 0..9 {
+                self.effacer(ligne, col);
+            }
+        }
+        self.resoudre()
+    }
+
     // La grille est gagnée quand toutes les cases sont remplies.
     // Chaque chiffre ayant été vérifié par est_valide, il n'y a rien d'autre à contrôler.
     pub fn est_terminee(&self) -> bool {
@@ -209,6 +260,12 @@ impl Grille {
         }
         // Plus aucune case vide : on vient de trouver exactement une solution
         1
+    }
+
+    // Génère une grille du niveau demandé
+    pub fn generer_niveau(niveau: Niveau) -> Grille {
+        let nom = format!("Partie {}", niveau.libelle().to_lowercase());
+        Grille::generer(nom, niveau.cases_a_retirer())
     }
 
     // Génère une grille à solution unique en retirant `a_retirer` cases (au plus) d'une
@@ -461,6 +518,33 @@ mod tests {
         let avant = g.cases;
         assert!(g.indice().is_none());
         assert_eq!(g.cases, avant);
+    }
+
+    #[test]
+    fn test_valeur_et_est_fixe() {
+        let g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        assert_eq!(g.valeur(0, 0), 5);
+        assert!(g.est_fixe(0, 0));
+        assert_eq!(g.valeur(0, 2), 0);
+        assert!(!g.est_fixe(0, 2));
+    }
+
+    #[test]
+    fn test_remplir_solution_ignore_les_coups_du_joueur() {
+        let mut g = Grille::depuis_texte(String::from("Test"), DEPART).unwrap();
+        // Coup valide mais faux : la solution met 4 en (0, 2)
+        assert!(g.placer(0, 2, 1));
+        assert!(g.remplir_solution());
+        let attendue = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
+        assert_eq!(g.cases, attendue.cases);
+    }
+
+    #[test]
+    fn test_generer_niveau() {
+        let g = Grille::generer_niveau(Niveau::Facile);
+        assert_eq!(g.nom, "Partie facile");
+        let vides = g.cases.iter().flatten().filter(|&&c| c == 0).count();
+        assert!(vides > 0 && vides <= 35);
     }
 
     #[test]
