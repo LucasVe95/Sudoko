@@ -53,6 +53,15 @@ enum Fin {
     Abandon,
 }
 
+// Un changement dans une case : ce qu'elle contenait avant et après (0 = vide)
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Coup {
+    ligne: usize,
+    col: usize,
+    avant: u8,
+    apres: u8,
+}
+
 // Ce que la partie demande à l'application de faire à sa place
 enum Action {
     Menu,
@@ -176,6 +185,10 @@ struct Partie {
     tampon: Option<(u8, f64)>,
     // true quand la partie a changé depuis la dernière sauvegarde
     modifiee: bool,
+    // Les changements faits par le joueur, du plus ancien au plus récent : de quoi les annuler
+    historique: Vec<Coup>,
+    // Les changements annulés, que l'on peut refaire. Un nouveau coup les efface.
+    annules: Vec<Coup>,
 }
 
 impl Partie {
@@ -196,6 +209,8 @@ impl Partie {
             rang: None,
             tampon: None,
             modifiee: false,
+            historique: Vec::new(),
+            annules: Vec::new(),
         }
     }
 
@@ -318,8 +333,12 @@ impl Partie {
             return;
         }
         self.modifiee = true;
+        let avant = self.grille.valeur(ligne, col);
         if valeur == 0 {
-            self.grille.effacer(ligne, col);
+            if avant != 0 {
+                self.grille.effacer(ligne, col);
+                self.noter_coup(ligne, col, avant, 0);
+            }
             self.message.clear();
             return;
         }
@@ -331,6 +350,9 @@ impl Partie {
 
         let correct = self.grille.est_correct(ligne, col, valeur);
         let place = self.grille.placer(ligne, col, valeur);
+        if place {
+            self.noter_coup(ligne, col, avant, valeur);
+        }
         if correct {
             if place || self.grille.valeur(ligne, col) == valeur {
                 self.message.clear();
@@ -364,6 +386,7 @@ impl Partie {
             Some((ligne, col, valeur)) => {
                 self.indices += 1;
                 self.modifiee = true;
+                self.noter_coup(ligne, col, 0, valeur);
                 self.selection = Some((ligne, col));
                 self.message = format!(
                     "Indice : {} en ligne {}, colonne {}",
@@ -397,6 +420,58 @@ impl Partie {
         }
     }
 
+    // Retient un changement de case pour pouvoir l'annuler. Un nouveau coup coupe la branche
+    // des coups annulés : on ne peut plus les refaire.
+    fn noter_coup(&mut self, ligne: usize, col: usize, avant: u8, apres: u8) {
+        self.historique.push(Coup { ligne, col, avant, apres });
+        self.annules.clear();
+    }
+
+    // Met une case à la valeur voulue (0 pour la vider)
+    fn fixer_case(&mut self, ligne: usize, col: usize, valeur: u8) {
+        if valeur == 0 {
+            self.grille.effacer(ligne, col);
+        } else {
+            self.grille.placer(ligne, col, valeur);
+        }
+    }
+
+    // Annule le dernier changement. Les erreurs et les indices déjà comptés ne sont pas rendus :
+    // sans cela, on pourrait tout essayer sans rien perdre.
+    fn annuler(&mut self) {
+        if self.fin.is_some() {
+            return;
+        }
+        self.valider_tampon();
+        let Some(coup) = self.historique.pop() else {
+            self.message = String::from("Rien à annuler");
+            return;
+        };
+        // La grille revient exactement dans l'état d'avant ce coup : la valeur est permise
+        self.fixer_case(coup.ligne, coup.col, coup.avant);
+        self.annules.push(coup);
+        self.selection = Some((coup.ligne, coup.col));
+        self.modifiee = true;
+        self.message = format!("Coup annulé (ligne {}, colonne {})", coup.ligne + 1, coup.col + 1);
+    }
+
+    // Refait le dernier changement annulé
+    fn refaire(&mut self) {
+        if self.fin.is_some() {
+            return;
+        }
+        self.valider_tampon();
+        let Some(coup) = self.annules.pop() else {
+            self.message = String::from("Rien à refaire");
+            return;
+        };
+        self.fixer_case(coup.ligne, coup.col, coup.apres);
+        self.historique.push(coup);
+        self.selection = Some((coup.ligne, coup.col));
+        self.modifiee = true;
+        self.message = format!("Coup refait (ligne {}, colonne {})", coup.ligne + 1, coup.col + 1);
+    }
+
     // Joue le premier chiffre en attente (10 attend un second chiffre : le 1 seul est joué)
     fn valider_tampon(&mut self) {
         if let Some((chiffre, _)) = self.tampon.take() {
@@ -422,11 +497,13 @@ impl Partie {
     fn lire_clavier(&mut self, ui: &egui::Ui) {
         let maximum = self.grille.taille().cote() as u8;
         let (touches, maintenant) = ui.input(|entree| {
-            let touches: Vec<Key> = entree
+            let touches: Vec<(Key, egui::Modifiers)> = entree
                 .events
                 .iter()
                 .filter_map(|evenement| match evenement {
-                    egui::Event::Key { key, pressed: true, repeat: false, .. } => Some(*key),
+                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                        Some((*key, *modifiers))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -440,7 +517,18 @@ impl Partie {
             }
         }
 
-        for touche in touches {
+        for (touche, modificateurs) in touches {
+            // Ctrl+Z annule, Ctrl+Y ou Ctrl+Maj+Z refait
+            if modificateurs.command {
+                match touche {
+                    Key::Z if modificateurs.shift => self.refaire(),
+                    Key::Z => self.annuler(),
+                    Key::Y => self.refaire(),
+                    _ => {}
+                }
+                continue;
+            }
+
             if let Some(&(_, chiffre)) = TOUCHES_CHIFFRES.iter().find(|(autre, _)| *autre == touche) {
                 let en_attente = self.tampon.map(|(premier, _)| premier);
                 let (a_jouer, tampon) = saisir_chiffre(en_attente, chiffre, maximum);
@@ -597,6 +685,15 @@ impl Partie {
             if ui.button("Solution").clicked() {
                 self.afficher_solution();
             }
+            ui.add_space(12.0);
+            let annulable = !self.historique.is_empty();
+            if ui.add_enabled(annulable, egui::Button::new("Annuler")).clicked() {
+                self.annuler();
+            }
+            let refaisable = !self.annules.is_empty();
+            if ui.add_enabled(refaisable, egui::Button::new("Refaire")).clicked() {
+                self.refaire();
+            }
         });
         if let Some(valeur) = chiffre_demande {
             self.jouer_chiffre(valeur);
@@ -725,7 +822,7 @@ impl Partie {
         if !self.message.is_empty() {
             ui.label(self.message.as_str());
         } else if self.fin.is_none() {
-            ui.label("Clic ou flèches pour choisir une case, puis un nombre (0 ou Suppr pour effacer)");
+            ui.label("Clic ou flèches pour choisir une case, puis un nombre (0 ou Suppr pour effacer). Ctrl+Z annule, Ctrl+Y refait.");
         }
         action
     }
@@ -1512,5 +1609,140 @@ mod tests {
         partie.afficher_solution();
         assert!(partie.modifiee);
         assert!(partie.fin.is_some());
+    }
+
+    // Dans les tests d'annulation, la case (0, 2) de la grille fixe admet 1, 2 ou 4 :
+    // la solution est 4, donc 1 est un chiffre faux mais permis.
+    #[test]
+    fn test_annuler_et_refaire_un_chiffre() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.selection, Some((0, 2)));
+        assert!(partie.historique.is_empty());
+
+        partie.refaire();
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+        assert!(partie.annules.is_empty());
+    }
+
+    #[test]
+    fn test_annuler_remet_le_chiffre_remplace() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        jouer(&mut partie, 0, 2, 1); // faux mais permis : il remplace le 4
+        assert_eq!(partie.grille.valeur(0, 2), 1);
+
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        partie.refaire();
+        partie.refaire();
+        assert_eq!(partie.grille.valeur(0, 2), 1);
+    }
+
+    #[test]
+    fn test_annuler_une_case_effacee() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        jouer(&mut partie, 0, 2, 0);
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+    }
+
+    #[test]
+    fn test_annuler_ne_rend_pas_les_erreurs() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 1); // faux mais permis : une erreur
+        assert_eq!(partie.erreurs, 1);
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.erreurs, 1);
+    }
+
+    #[test]
+    fn test_un_coup_refuse_ou_inutile_n_est_pas_retenu() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5); // brise une règle : refusé
+        jouer(&mut partie, 0, 2, 0); // case déjà vide
+        jouer(&mut partie, 0, 0, 7); // case de départ
+        assert!(partie.historique.is_empty());
+        jouer(&mut partie, 0, 2, 4);
+        jouer(&mut partie, 0, 2, 4); // déjà là
+        assert_eq!(partie.historique.len(), 1);
+    }
+
+    #[test]
+    fn test_un_nouveau_coup_efface_les_coups_a_refaire() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.annuler();
+        assert_eq!(partie.annules.len(), 1);
+        jouer(&mut partie, 0, 3, 6);
+        assert!(partie.annules.is_empty());
+        partie.refaire();
+        assert_eq!(partie.message, "Rien à refaire");
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+    }
+
+    #[test]
+    fn test_annuler_un_indice_garde_son_prix() {
+        let mut partie = partie_fixe();
+        partie.demander_indice();
+        let (ligne, col) = partie.selection.unwrap();
+        assert_ne!(partie.grille.valeur(ligne, col), 0);
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(ligne, col), 0);
+        assert_eq!(partie.indices, 1);
+        partie.refaire();
+        assert_ne!(partie.grille.valeur(ligne, col), 0);
+    }
+
+    #[test]
+    fn test_rien_a_annuler() {
+        let mut partie = partie_fixe();
+        partie.annuler();
+        assert_eq!(partie.message, "Rien à annuler");
+        assert!(!partie.modifiee);
+    }
+
+    #[test]
+    fn test_pas_d_annulation_apres_la_fin() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.afficher_solution();
+        let cases = partie.grille.cases().to_vec();
+        partie.annuler();
+        partie.refaire();
+        assert_eq!(partie.grille.cases(), cases.as_slice());
+    }
+
+    #[test]
+    fn test_annuler_marque_la_partie_a_sauvegarder() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.modifiee = false;
+        partie.annuler();
+        assert!(partie.modifiee);
+        partie.modifiee = false;
+        partie.refaire();
+        assert!(partie.modifiee);
+    }
+
+    #[test]
+    fn test_annuler_valide_le_chiffre_en_attente() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.tampon = Some((1, 0.0));
+        partie.selection = Some((0, 3));
+        partie.annuler();
+        // Le 1 en attente est joué en (0, 3) où il est refusé, puis le 4 est annulé
+        assert!(partie.tampon.is_none());
+        assert_eq!(partie.grille.valeur(0, 2), 0);
     }
 }

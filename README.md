@@ -20,6 +20,7 @@ Déjà présent :
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
+- Annuler et refaire les coups (`Ctrl+Z`, `Ctrl+Y`)
 - Sauvegarde automatique de la partie en cours : on ferme le jeu et on reprend plus tard
 - Jeu au terminal, pour toutes les tailles
 
@@ -46,6 +47,7 @@ Pendant la partie :
 - Au-delà de 9, un nombre s'écrit avec deux touches : tapez `1` puis `2` pour obtenir 12. Le `1` attend un instant le second chiffre, puis se place seul si rien ne suit. Quand les deux chiffres ne forment pas un nombre de la grille (17 en 16×16), le dernier compte seul.
 - Les boutons `1` jusqu'au côté de la grille et `Effacer` font la même chose à la souris.
 - `Indice` révèle une case au hasard, `Solution` affiche la grille complète et termine la partie.
+- `Annuler` (ou `Ctrl+Z`) défait le dernier changement de case, `Refaire` (ou `Ctrl+Y`, `Ctrl+Maj+Z`) le remet. Un nouveau coup efface ce qu'on pouvait refaire. Annuler ne rend ni les erreurs ni les indices déjà comptés, et l'historique n'est pas conservé quand on ferme le jeu.
 - `Menu` met la partie en pause (le chronomètre s'arrête) et revient au menu.
 - Fermer la fenêtre en pleine partie ne la perd pas : voir *Sauvegarde* ci-dessous.
 
