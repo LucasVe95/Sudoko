@@ -20,6 +20,8 @@ Déjà présent :
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
+- Statistiques par taille et par niveau : victoires, meilleur temps, séries
+- Notes au crayon dans les cases vides, avec un remplissage automatique des chiffres permis
 - Annuler et refaire les coups (`Ctrl+Z`, `Ctrl+Y`)
 - Sauvegarde automatique de la partie en cours : on ferme le jeu et on reprend plus tard
 - Jeu au terminal, pour toutes les tailles
@@ -48,6 +50,7 @@ Pendant la partie :
 - Les boutons `1` jusqu'au côté de la grille et `Effacer` font la même chose à la souris.
 - `Indice` révèle une case au hasard, `Solution` affiche la grille complète et termine la partie.
 - `Annuler` (ou `Ctrl+Z`) défait le dernier changement de case, `Refaire` (ou `Ctrl+Y`, `Ctrl+Maj+Z`) le remet. Un nouveau coup efface ce qu'on pouvait refaire. Annuler ne rend ni les erreurs ni les indices déjà comptés, et l'historique n'est pas conservé quand on ferme le jeu.
+- **Notes au crayon.** Le bouton `Notes` (ou la touche `N`) bascule en mode notes : un nombre écrit alors une petite note dans la case choisie au lieu de jouer un chiffre, et le même nombre une seconde fois la retire. Les notes sont rangées en tableau dans la case, toujours à la même place. `0`, `Suppr` ou `Effacer` vident les notes d'une case vide (sur une case remplie, ils effacent le chiffre, même en mode notes). Les notes sont de simples brouillons : elles ne comptent aucune erreur et peuvent être fausses. `Remplir les notes` écrit dans chaque case vide tous les chiffres que les règles y permettent (sans révéler la solution, donc sans pénalité) et remplace les notes déjà écrites ; on peut le relancer quand la grille a avancé. Poser un chiffre efface les notes de sa case, et annuler ce coup les remet. Les notes sont conservées par la sauvegarde.
 - `Menu` met la partie en pause (le chronomètre s'arrête) et revient au menu.
 - Fermer la fenêtre en pleine partie ne la perd pas : voir *Sauvegarde* ci-dessous.
 
@@ -86,6 +89,18 @@ Le classement est enregistré dans un fichier texte, en dehors du dépôt, et il
 - Linux et macOS : `~/.local/share/Sudoko/scores.txt`
 
 Supprimer ce fichier remet le classement à zéro. Le terminal ne gère ni score ni classement.
+
+**Statistiques.** Le menu donne aussi accès aux `Statistiques`. Chaque partie terminée sur une grille générée (victoire, défaite ou abandon) y est comptée, une seule fois ; la grille d'entraînement et les parties laissées en cours ne le sont pas. Comme pour le classement, on choisit une taille de grille et, au besoin, un niveau. L'écran affiche :
+
+- le nombre de parties jouées, de victoires (avec le pourcentage), de défaites et d'abandons ;
+- le meilleur temps et le temps moyen d'une victoire ;
+- le meilleur score ;
+- les victoires d'affilée en ce moment et la meilleure série (une défaite ou un abandon la coupe).
+
+Les statistiques sont dans un fichier texte à côté du classement, que l'on peut supprimer pour les remettre à zéro :
+
+- Windows : `%APPDATA%\Sudoko\statistiques.txt`
+- Linux et macOS : `~/.local/share/Sudoko/statistiques.txt`
 
 ### Au terminal
 
@@ -161,10 +176,11 @@ Sudoko/
 ├── Cargo.toml    # Configuration du projet et dépendances
 ├── src/
 │   ├── main.rs   # Point d'entrée : choix de la grille et de l'interface selon les arguments
-│   ├── gui.rs    # Interface graphique (egui) : menu, partie, erreurs, chrono, écran de fin, classement
+│   ├── gui.rs    # Interface graphique (egui) : menu, partie, erreurs, chrono, écran de fin, classement, statistiques
 │   ├── classement.rs # Calcul du score et classement enregistré dans un fichier
 │   ├── jeu.rs    # Boucle de jeu au terminal et lecture des commandes
 │   ├── sauvegarde.rs # Sauvegarde et reprise de la partie en cours (fichier texte)
+│   ├── statistiques.rs # Parties terminées enregistrées dans un fichier, et calcul des statistiques
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
 │   └── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
 ├── LICENSE

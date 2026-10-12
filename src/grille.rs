@@ -328,6 +328,17 @@ impl Grille {
         true
     }
 
+    // Les chiffres que les règles permettent dans une case, en bits : le bit (v - 1) vaut 1
+    // si le chiffre v est permis. Une case déjà remplie n'a aucun candidat.
+    pub fn candidats(&self, ligne: usize, col: usize) -> u16 {
+        if self.valeur(ligne, col) != 0 {
+            return 0;
+        }
+        (1..=self.taille.cote() as u8)
+            .filter(|&valeur| self.est_valide(ligne, col, valeur))
+            .fold(0, |bits, valeur| bits | 1 << (valeur - 1))
+    }
+
     //methode qui modifie : &mut self
     // Renvoie true si la valeur a été placée, false si le coup est refusé
     pub fn placer(&mut self, ligne: usize, col: usize, valeur: u8) -> bool {
@@ -1017,5 +1028,25 @@ mod tests {
         let (ligne, col, valeur) = g.indice().unwrap();
         assert_eq!(g.valeur(ligne, col), valeur);
         assert!(g.est_correct(ligne, col, valeur));
+    }
+
+    #[test]
+    fn test_candidats() {
+        let g = Grille::creer(Origine::Fixe).unwrap();
+        // La case (0, 2) de la grille d'entraînement admet 1, 2 ou 4 : bits 0, 1 et 3
+        assert_eq!(g.candidats(0, 2), 0b1011);
+        // Une case de départ n'a aucun candidat
+        assert_eq!(g.candidats(0, 0), 0);
+
+        // Une grille vide laisse tous les chiffres possibles
+        let vide = Grille::nouvelle(Taille::Seize, String::from("Vide"));
+        assert_eq!(vide.candidats(5, 5), u16::MAX);
+        let mut petite = Grille::nouvelle(Taille::Quatre, String::from("Petite"));
+        assert_eq!(petite.candidats(0, 0), 0b1111);
+        assert!(petite.placer(0, 1, 3));
+        // Le 3 est pris dans la ligne, la colonne 1 et le bloc
+        assert_eq!(petite.candidats(0, 0), 0b1011);
+        assert_eq!(petite.candidats(3, 1), 0b1011);
+        assert_eq!(petite.candidats(1, 0), 0b1011);
     }
 }

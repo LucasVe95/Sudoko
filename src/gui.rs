@@ -5,6 +5,7 @@ use crate::classement::{
 };
 use crate::grille::{Grille, Niveau, Origine, Taille};
 use crate::sauvegarde::{PartieSauvee, Sauvegarde};
+use crate::statistiques::{PartieJouee, Resultat, Statistiques};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextEdit, Vec2,
 };
@@ -39,6 +40,7 @@ const MEME_CHIFFRE: Color32 = Color32::from_rgb(210, 225, 250);
 const LIGNE_COLONNE_BLOC: Color32 = Color32::from_rgb(235, 240, 248);
 const CHIFFRE_DEPART: Color32 = Color32::from_rgb(25, 25, 25);
 const CHIFFRE_JOUEUR: Color32 = Color32::from_rgb(30, 90, 200);
+const NOTE: Color32 = Color32::from_rgb(110, 110, 130);
 const CHIFFRE_FAUX: Color32 = Color32::from_rgb(210, 40, 40);
 const TRAIT_FIN: Color32 = Color32::from_rgb(170, 170, 170);
 const TRAIT_EPAIS: Color32 = Color32::from_rgb(25, 25, 25);
@@ -60,6 +62,9 @@ struct Coup {
     col: usize,
     avant: u8,
     apres: u8,
+    // Les notes que la case portait avant le coup : poser un chiffre les efface,
+    // annuler le coup les remet
+    notes: u16,
 }
 
 // Ce que la partie demande à l'application de faire à sa place
@@ -74,6 +79,7 @@ enum ChoixMenu {
     Reprendre,
     Nouvelle(Origine),
     Classement,
+    Statistiques,
     Quitter,
 }
 
@@ -189,10 +195,18 @@ struct Partie {
     historique: Vec<Coup>,
     // Les changements annulés, que l'on peut refaire. Un nouveau coup les efface.
     annules: Vec<Coup>,
+    // Les notes au crayon de chaque case, en bits : le bit (v - 1) vaut 1 si la note v est écrite.
+    // Une case n'a des notes que tant qu'elle est vide.
+    notes: Vec<u16>,
+    // true quand les chiffres tapés s'écrivent en notes au lieu d'être joués
+    mode_notes: bool,
+    // true quand la fin de la partie est déjà entrée dans les statistiques
+    comptee: bool,
 }
 
 impl Partie {
     fn new(grille: Grille, origine: Origine) -> Partie {
+        let notes = vec![0; grille.taille().cases()];
         Partie {
             grille,
             origine,
@@ -211,6 +225,9 @@ impl Partie {
             modifiee: false,
             historique: Vec::new(),
             annules: Vec::new(),
+            notes,
+            mode_notes: false,
+            comptee: false,
         }
     }
 
@@ -225,7 +242,31 @@ impl Partie {
         partie.indices = sauvee.indices;
         partie.ecoule = Duration::from_secs(sauvee.secondes);
         partie.reprise = None;
+        partie.notes = sauvee.notes;
         Some(partie)
+    }
+
+    // La ligne des statistiques pour cette partie. Rien tant qu'elle n'est pas finie, ni pour la
+    // grille d'entraînement.
+    fn vers_statistique(&self) -> Option<PartieJouee> {
+        let (fin, Origine::Niveau(niveau, taille)) = (self.fin?, self.origine) else {
+            return None;
+        };
+        let resultat = match fin {
+            Fin::Victoire => Resultat::Victoire,
+            Fin::Defaite => Resultat::Defaite,
+            Fin::Abandon => Resultat::Abandon,
+        };
+        Some(PartieJouee {
+            horodatage: maintenant(),
+            niveau,
+            taille,
+            resultat,
+            duree_secondes: self.duree().as_secs(),
+            erreurs: self.erreurs,
+            indices: self.indices,
+            score: self.score.unwrap_or(0),
+        })
     }
 
     // Ce qui est enregistré pour pouvoir reprendre la partie
@@ -236,6 +277,7 @@ impl Partie {
             erreurs: self.erreurs,
             indices: self.indices,
             secondes: self.duree().as_secs(),
+            notes: self.notes.clone(),
         }
     }
 
@@ -334,6 +376,12 @@ impl Partie {
         }
         self.modifiee = true;
         let avant = self.grille.valeur(ligne, col);
+        // En mode notes, les chiffres s'écrivent en notes. Seul le 0 sur une case remplie
+        // garde son rôle : effacer le chiffre.
+        if self.mode_notes && !(valeur == 0 && avant != 0) {
+            self.jouer_note(ligne, col, valeur);
+            return;
+        }
         if valeur == 0 {
             if avant != 0 {
                 self.grille.effacer(ligne, col);
@@ -420,10 +468,69 @@ impl Partie {
         }
     }
 
-    // Retient un changement de case pour pouvoir l'annuler. Un nouveau coup coupe la branche
-    // des coups annulés : on ne peut plus les refaire.
+    // L'indice d'une case dans `notes`
+    fn position(&self, ligne: usize, col: usize) -> usize {
+        ligne * self.grille.taille().cote() + col
+    }
+
+    // Écrit ou retire une note dans la case choisie (0 : efface toutes ses notes).
+    // Les notes ne comptent pas d'erreur : ce ne sont que des brouillons.
+    fn jouer_note(&mut self, ligne: usize, col: usize, valeur: u8) {
+        if self.grille.valeur(ligne, col) != 0 {
+            self.message = String::from("Cette case contient déjà un chiffre : effacez-la pour y écrire des notes");
+            return;
+        }
+        let maximum = self.grille.taille().cote();
+        if valeur as usize > maximum {
+            self.message = format!("Cette grille va de 1 à {}", maximum);
+            return;
+        }
+        let position = self.position(ligne, col);
+        if valeur == 0 {
+            self.notes[position] = 0;
+        } else {
+            // Un même chiffre écrit deux fois s'efface : le bit change à chaque fois
+            self.notes[position] ^= 1 << (valeur - 1);
+        }
+        self.message.clear();
+    }
+
+    // Écrit dans chaque case vide tous les chiffres que les règles y permettent.
+    // Les notes déjà écrites sont remplacées.
+    fn remplir_notes(&mut self) {
+        if self.fin.is_some() {
+            return;
+        }
+        self.valider_tampon();
+        let cote = self.grille.taille().cote();
+        for ligne in 0..cote {
+            for col in 0..cote {
+                let candidats = if self.grille.est_fixe(ligne, col) {
+                    0
+                } else {
+                    self.grille.candidats(ligne, col)
+                };
+                let position = self.position(ligne, col);
+                self.notes[position] = candidats;
+            }
+        }
+        self.modifiee = true;
+        self.message = String::from("Notes remplies avec les chiffres que les règles permettent");
+    }
+
+    // Passe du mode « chiffres » au mode « notes », et inversement
+    fn basculer_mode_notes(&mut self) {
+        self.valider_tampon();
+        self.mode_notes = !self.mode_notes;
+    }
+
+    // Retient un changement de case pour pouvoir l'annuler. Poser un chiffre efface les notes
+    // de la case : elles sont gardées dans le coup pour revenir si on l'annule.
+    // Un nouveau coup coupe la branche des coups annulés : on ne peut plus les refaire.
     fn noter_coup(&mut self, ligne: usize, col: usize, avant: u8, apres: u8) {
-        self.historique.push(Coup { ligne, col, avant, apres });
+        let position = self.position(ligne, col);
+        let notes = std::mem::take(&mut self.notes[position]);
+        self.historique.push(Coup { ligne, col, avant, apres, notes });
         self.annules.clear();
     }
 
@@ -449,6 +556,8 @@ impl Partie {
         };
         // La grille revient exactement dans l'état d'avant ce coup : la valeur est permise
         self.fixer_case(coup.ligne, coup.col, coup.avant);
+        let position = self.position(coup.ligne, coup.col);
+        self.notes[position] = coup.notes;
         self.annules.push(coup);
         self.selection = Some((coup.ligne, coup.col));
         self.modifiee = true;
@@ -466,6 +575,10 @@ impl Partie {
             return;
         };
         self.fixer_case(coup.ligne, coup.col, coup.apres);
+        if coup.apres != 0 {
+            let position = self.position(coup.ligne, coup.col);
+            self.notes[position] = 0;
+        }
         self.historique.push(coup);
         self.selection = Some((coup.ligne, coup.col));
         self.modifiee = true;
@@ -543,6 +656,7 @@ impl Partie {
             self.valider_tampon();
             match touche {
                 Key::Backspace | Key::Delete => self.jouer_chiffre(0),
+                Key::N => self.basculer_mode_notes(),
                 Key::ArrowUp => self.deplacer(-1, 0),
                 Key::ArrowDown => self.deplacer(1, 0),
                 Key::ArrowLeft => self.deplacer(0, -1),
@@ -627,6 +741,32 @@ impl Partie {
                         FontId::proportional(hauteur),
                         couleur,
                     );
+                } else {
+                    // Une case vide montre ses notes en petit, rangées en tableau :
+                    // le chiffre v a toujours la même place dans la case
+                    let notes = self.notes[ligne * nombre + col];
+                    let colonnes = (nombre as f32).sqrt().ceil() as usize;
+                    let lignes_notes = nombre.div_ceil(colonnes);
+                    let (largeur, hauteur) = (case / colonnes as f32, case / lignes_notes as f32);
+                    for note in 1..=nombre {
+                        if notes & (1 << (note - 1)) == 0 {
+                            continue;
+                        }
+                        let (rang, colonne) = ((note - 1) / colonnes, (note - 1) % colonnes);
+                        let centre = Pos2::new(
+                            coin.x + (colonne as f32 + 0.5) * largeur,
+                            coin.y + (rang as f32 + 0.5) * hauteur,
+                        );
+                        // Les notes du chiffre choisi ressortent
+                        let couleur = if chiffre_choisi == Some(note as u8) { CHIFFRE_JOUEUR } else { NOTE };
+                        peintre.text(
+                            centre,
+                            Align2::CENTER_CENTER,
+                            note,
+                            FontId::proportional(largeur.min(hauteur) * 0.8),
+                            couleur,
+                        );
+                    }
                 }
             }
         }
@@ -693,6 +833,15 @@ impl Partie {
             let refaisable = !self.annules.is_empty();
             if ui.add_enabled(refaisable, egui::Button::new("Refaire")).clicked() {
                 self.refaire();
+            }
+        });
+        ui.horizontal(|ui| {
+            // Le bouton reste enfoncé tant que le mode notes est actif
+            if ui.selectable_label(self.mode_notes, "Notes (N)").clicked() {
+                self.basculer_mode_notes();
+            }
+            if ui.button("Remplir les notes").clicked() {
+                self.remplir_notes();
             }
         });
         if let Some(valeur) = chiffre_demande {
@@ -804,7 +953,7 @@ impl Partie {
         // afficher les commandes en dessous
         let cote = ui
             .available_width()
-            .min(ui.available_height() - 200.0)
+            .min(ui.available_height() - 235.0)
             .max(180.0);
         ui.vertical_centered(|ui| self.dessiner_grille(ui, cote));
         ui.add_space(8.0);
@@ -822,7 +971,12 @@ impl Partie {
         if !self.message.is_empty() {
             ui.label(self.message.as_str());
         } else if self.fin.is_none() {
-            ui.label("Clic ou flèches pour choisir une case, puis un nombre (0 ou Suppr pour effacer). Ctrl+Z annule, Ctrl+Y refait.");
+            let aide = if self.mode_notes {
+                "Mode notes : un nombre écrit ou retire une note. N revient aux chiffres."
+            } else {
+                "Clic ou flèches pour choisir une case, puis un nombre (0 ou Suppr pour effacer). N : notes. Ctrl+Z annule."
+            };
+            ui.label(aide);
         }
         action
     }
@@ -832,6 +986,7 @@ enum Ecran {
     Menu,
     Partie,
     Classement,
+    Statistiques,
 }
 
 struct Application {
@@ -850,6 +1005,10 @@ struct Application {
     dernier_nom: String,
     // Le fichier où la partie en cours est enregistrée
     sauvegarde: Sauvegarde,
+    // Toutes les parties terminées, et la taille et le niveau affichés dans l'écran des statistiques
+    statistiques: Statistiques,
+    taille_stats: Taille,
+    filtre_stats: Option<Niveau>,
 }
 
 impl Application {
@@ -873,6 +1032,9 @@ impl Application {
             filtre: None,
             dernier_nom,
             sauvegarde,
+            statistiques: Statistiques::charger(),
+            taille_stats: Taille::Neuf,
+            filtre_stats: None,
         }
     }
 
@@ -919,6 +1081,15 @@ impl Application {
         partie.modifiee = false;
         if partie.fin.is_some() {
             self.sauvegarde.supprimer();
+            // La partie finie entre dans les statistiques, une seule fois
+            if !partie.comptee {
+                partie.comptee = true;
+                if let Some(jouee) = partie.vers_statistique() {
+                    if let Err(erreur) = self.statistiques.ajouter(jouee) {
+                        partie.message = erreur;
+                    }
+                }
+            }
         } else if let Err(erreur) = self.sauvegarde.enregistrer(&partie.vers_sauvegarde()) {
             partie.message = erreur;
         }
@@ -986,6 +1157,10 @@ impl Application {
                 if gros_bouton(ui, "Classement") {
                     choix = Some(ChoixMenu::Classement);
                 }
+                ui.add_space(8.0);
+                if gros_bouton(ui, "Statistiques") {
+                    choix = Some(ChoixMenu::Statistiques);
+                }
                 ui.add_space(16.0);
                 if gros_bouton(ui, "Quitter") {
                     choix = Some(ChoixMenu::Quitter);
@@ -1007,6 +1182,7 @@ impl Application {
             }
             Some(ChoixMenu::Nouvelle(origine)) => self.lancer_partie(origine, ui.ctx()),
             Some(ChoixMenu::Classement) => self.ecran = Ecran::Classement,
+            Some(ChoixMenu::Statistiques) => self.ecran = Ecran::Statistiques,
             Some(ChoixMenu::Quitter) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             None => {}
         }
@@ -1114,6 +1290,74 @@ impl Application {
             self.ecran = Ecran::Menu;
         }
     }
+
+    fn dessiner_statistiques(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(10.0);
+            ui.heading(format!("Statistiques {}", self.taille_stats.libelle()));
+        });
+        ui.add_space(8.0);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Taille :");
+            for taille in Taille::TOUTES {
+                ui.selectable_value(&mut self.taille_stats, taille, taille.libelle());
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Niveau :");
+            ui.selectable_value(&mut self.filtre_stats, None, "Tous");
+            for niveau in Niveau::TOUS {
+                ui.selectable_value(&mut self.filtre_stats, Some(niveau), niveau.libelle());
+            }
+        });
+        ui.add_space(8.0);
+
+        let resume = self.statistiques.resume(self.taille_stats, self.filtre_stats);
+        if resume.jouees == 0 {
+            ui.label(format!(
+                "Aucune partie terminée en {} pour l'instant.",
+                self.taille_stats.libelle()
+            ));
+        } else {
+            let temps = |secondes: Option<u64>| {
+                secondes.map_or(String::from("-"), |s| formater_duree(Duration::from_secs(s)))
+            };
+            let pourcentage = resume.taux_de_victoire().unwrap_or(0);
+            let lignes = [
+                ("Parties jouées", resume.jouees.to_string()),
+                ("Victoires", format!("{} ({} %)", resume.victoires, pourcentage)),
+                ("Défaites", resume.defaites.to_string()),
+                ("Abandons", resume.abandons.to_string()),
+                ("Meilleur temps", temps(resume.meilleur_temps)),
+                ("Temps moyen d'une victoire", temps(resume.temps_moyen)),
+                (
+                    "Meilleur score",
+                    resume.meilleur_score.map_or(String::from("-"), |score| score.to_string()),
+                ),
+                ("Victoires d'affilée", resume.serie_en_cours.to_string()),
+                ("Meilleure série", resume.meilleure_serie.to_string()),
+            ];
+            egui::Grid::new("tableau_statistiques")
+                .striped(true)
+                .num_columns(2)
+                .spacing([24.0, 6.0])
+                .show(ui, |ui| {
+                    for (nom, valeur) in lignes {
+                        ui.label(nom);
+                        ui.label(RichText::new(valeur).strong());
+                        ui.end_row();
+                    }
+                });
+        }
+        ui.add_space(8.0);
+        ui.small("Les parties terminées sont comptées ; la grille d'entraînement ne l'est pas.");
+
+        ui.add_space(16.0);
+        if ui.button("Retour au menu").clicked() {
+            self.ecran = Ecran::Menu;
+        }
+    }
 }
 
 // Un grand bouton pour le menu
@@ -1130,6 +1374,7 @@ impl eframe::App for Application {
             Ecran::Menu => self.dessiner_menu(ui),
             Ecran::Partie => self.dessiner_partie(ui),
             Ecran::Classement => self.dessiner_classement(ui),
+            Ecran::Statistiques => self.dessiner_statistiques(ui),
         });
     }
 
@@ -1732,6 +1977,250 @@ mod tests {
         partie.modifiee = false;
         partie.refaire();
         assert!(partie.modifiee);
+    }
+
+    // Position d'une case dans `notes` de la grille d'entraînement (9×9)
+    fn pos(ligne: usize, col: usize) -> usize {
+        ligne * 9 + col
+    }
+
+    #[test]
+    fn test_ecrire_et_retirer_une_note() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        assert!(partie.mode_notes);
+
+        jouer(&mut partie, 0, 2, 1);
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.notes[pos(0, 2)], 0b1001);
+        // Le même chiffre une seconde fois retire la note
+        jouer(&mut partie, 0, 2, 1);
+        assert_eq!(partie.notes[pos(0, 2)], 0b1000);
+
+        // Une note n'est pas un coup : ni chiffre, ni erreur, ni historique
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.erreurs, 0);
+        assert!(partie.historique.is_empty());
+        assert!(partie.modifiee);
+    }
+
+    #[test]
+    fn test_une_note_peut_etre_fausse_sans_erreur() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 5); // le 5 est déjà dans la ligne : c'est juste une note
+        jouer(&mut partie, 0, 2, 9);
+        assert_eq!(partie.notes[pos(0, 2)], 1 << 4 | 1 << 8);
+        assert_eq!(partie.erreurs, 0);
+    }
+
+    #[test]
+    fn test_pas_de_note_sur_une_case_remplie_ou_de_depart() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 1);
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+        assert!(partie.message.contains("contient déjà un chiffre"));
+
+        jouer(&mut partie, 0, 0, 1); // case de départ
+        assert_eq!(partie.notes[pos(0, 0)], 0);
+    }
+
+    #[test]
+    fn test_zero_en_mode_notes() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 1);
+        jouer(&mut partie, 0, 2, 2);
+        // Sur une case vide, 0 efface ses notes
+        jouer(&mut partie, 0, 2, 0);
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+
+        // Sur une case remplie, 0 efface le chiffre, même en mode notes
+        partie.mode_notes = false;
+        jouer(&mut partie, 0, 2, 4);
+        partie.mode_notes = true;
+        jouer(&mut partie, 0, 2, 0);
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+    }
+
+    #[test]
+    fn test_un_nombre_trop_grand_n_est_pas_une_note() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 10);
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+    }
+
+    #[test]
+    fn test_les_notes_a_deux_chiffres_en_16x16() {
+        let mut partie = partie_de_taille(Taille::Seize);
+        partie.basculer_mode_notes();
+        let vide = (0..256).find(|&i| partie.grille.valeur(i / 16, i % 16) == 0).unwrap();
+        let (ligne, col) = (vide / 16, vide % 16);
+        jouer(&mut partie, ligne, col, 16);
+        jouer(&mut partie, ligne, col, 12);
+        assert_eq!(partie.notes[vide], 1 << 15 | 1 << 11);
+    }
+
+    #[test]
+    fn test_poser_un_chiffre_efface_les_notes_et_annuler_les_rend() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 1);
+        jouer(&mut partie, 0, 2, 4);
+        partie.basculer_mode_notes();
+
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.notes[pos(0, 2)], 0b1001);
+
+        partie.refaire();
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+    }
+
+    #[test]
+    fn test_un_indice_efface_les_notes_de_sa_case() {
+        let mut partie = partie_fixe();
+        // Des notes dans toutes les cases vides
+        partie.remplir_notes();
+        partie.demander_indice();
+        let (ligne, col) = partie.selection.unwrap();
+        assert_ne!(partie.grille.valeur(ligne, col), 0);
+        assert_eq!(partie.notes[pos(ligne, col)], 0);
+        partie.annuler();
+        assert_ne!(partie.notes[pos(ligne, col)], 0);
+    }
+
+    #[test]
+    fn test_remplir_les_notes() {
+        let mut partie = partie_fixe();
+        partie.notes[pos(0, 2)] = 1 << 8; // une note à la main : elle est remplacée
+        partie.remplir_notes();
+        assert_eq!(partie.notes[pos(0, 2)], 0b1011);
+        // Pas de note dans une case de départ
+        assert_eq!(partie.notes[pos(0, 0)], 0);
+        // Ni dans une case remplie
+        jouer(&mut partie, 0, 2, 4);
+        partie.remplir_notes();
+        assert_eq!(partie.notes[pos(0, 2)], 0);
+        // Les notes d'une autre case de la ligne ont perdu le 4
+        assert_eq!(partie.notes[pos(0, 3)] & (1 << 3), 0);
+        assert!(partie.modifiee);
+    }
+
+    #[test]
+    fn test_les_notes_suivent_la_sauvegarde() {
+        let mut partie = partie_fixe();
+        partie.basculer_mode_notes();
+        jouer(&mut partie, 0, 2, 1);
+        jouer(&mut partie, 0, 2, 2);
+        let restauree = Partie::restaurer(partie.vers_sauvegarde()).unwrap();
+        assert_eq!(restauree.notes, partie.notes);
+        assert_eq!(restauree.notes[pos(0, 2)], 0b11);
+    }
+
+    // Une application dont les trois fichiers sont dans le dossier temporaire
+    fn application_de_test(partie: Partie) -> Application {
+        use crate::classement::chemin_temporaire;
+        Application {
+            ecran: Ecran::Partie,
+            partie: Some(partie),
+            generation: None,
+            erreur: String::new(),
+            classement: Classement::depuis_fichier(chemin_temporaire()),
+            taille_choisie: Taille::Neuf,
+            taille_classement: Taille::Neuf,
+            filtre: None,
+            dernier_nom: String::new(),
+            sauvegarde: Sauvegarde::depuis_fichier(chemin_temporaire()),
+            statistiques: Statistiques::depuis_fichier(chemin_temporaire()),
+            taille_stats: Taille::Neuf,
+            filtre_stats: None,
+        }
+    }
+
+    // Supprime les fichiers qu'une application de test a pu écrire
+    fn nettoyer(application: &Application) {
+        application.sauvegarde.supprimer();
+        application.statistiques.effacer_fichier();
+    }
+
+    #[test]
+    fn test_une_victoire_entre_une_seule_fois_dans_les_statistiques() {
+        let mut partie = partie_moyenne();
+        gagner(&mut partie);
+        let mut application = application_de_test(partie);
+
+        // La fenêtre sauvegarde à chaque image : la partie finie ne doit compter qu'une fois
+        application.sauvegarder_partie();
+        application.sauvegarder_partie();
+        eframe::App::on_exit(&mut application, None);
+
+        let resume = application.statistiques.resume(Taille::Neuf, None);
+        assert_eq!(resume.jouees, 1);
+        assert_eq!(resume.victoires, 1);
+        assert_eq!(resume.meilleur_score, Some(application.partie.as_ref().unwrap().score.unwrap()));
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Some(Niveau::Moyen)).jouees, 1);
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Some(Niveau::Facile)).jouees, 0);
+        assert_eq!(application.statistiques.resume(Taille::Six, None).jouees, 0);
+        nettoyer(&application);
+    }
+
+    #[test]
+    fn test_une_defaite_et_un_abandon_entrent_dans_les_statistiques() {
+        let mut perdue = partie_moyenne();
+        for _ in 0..MAX_ERREURS {
+            jouer(&mut perdue, 0, 2, 5);
+        }
+        assert_eq!(perdue.fin, Some(Fin::Defaite));
+        let mut application = application_de_test(perdue);
+        application.sauvegarder_partie();
+        let resume = application.statistiques.resume(Taille::Neuf, None);
+        assert_eq!((resume.jouees, resume.defaites, resume.victoires), (1, 1, 0));
+
+        let mut abandonnee = partie_moyenne();
+        abandonnee.afficher_solution();
+        application.partie = Some(abandonnee);
+        application.sauvegarder_partie();
+        let resume = application.statistiques.resume(Taille::Neuf, None);
+        assert_eq!((resume.jouees, resume.defaites, resume.abandons), (2, 1, 1));
+        nettoyer(&application);
+    }
+
+    #[test]
+    fn test_une_partie_en_cours_ou_d_entrainement_n_est_pas_comptee() {
+        let mut en_cours = partie_moyenne();
+        jouer(&mut en_cours, 0, 2, 4);
+        let mut application = application_de_test(en_cours);
+        application.sauvegarder_partie();
+        assert_eq!(application.statistiques.resume(Taille::Neuf, None).jouees, 0);
+
+        let mut entrainement = partie_fixe();
+        gagner(&mut entrainement);
+        assert_eq!(entrainement.fin, Some(Fin::Victoire));
+        application.partie = Some(entrainement);
+        application.sauvegarder_partie();
+        assert_eq!(application.statistiques.resume(Taille::Neuf, None).jouees, 0);
+        nettoyer(&application);
+    }
+
+    #[test]
+    fn test_la_statistique_garde_les_chiffres_de_la_partie() {
+        let mut partie = partie_moyenne();
+        jouer(&mut partie, 0, 2, 5); // une erreur
+        partie.demander_indice();
+        gagner(&mut partie);
+        let jouee = partie.vers_statistique().unwrap();
+        assert_eq!(jouee.resultat, Resultat::Victoire);
+        assert_eq!((jouee.erreurs, jouee.indices), (1, 1));
+        assert_eq!(jouee.score, partie.score.unwrap());
+        assert_eq!((jouee.niveau, jouee.taille), (Niveau::Moyen, Taille::Neuf));
     }
 
     #[test]

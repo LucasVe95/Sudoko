@@ -1,7 +1,7 @@
 //! Le score d'une partie et le classement des meilleurs scores, enregistré dans un fichier.
 
 use crate::grille::{Niveau, Taille};
-use crate::sauvegarde::dossier_donnees;
+use crate::sauvegarde::{dossier_donnees, ecrire_fichier};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -191,23 +191,13 @@ impl Classement {
     }
 
     fn sauvegarder(&self) -> Result<(), String> {
-        let echec = |erreur: std::io::Error| format!("Impossible d'enregistrer le classement : {}", erreur);
-
-        if let Some(dossier) = self.chemin.parent() {
-            if !dossier.as_os_str().is_empty() {
-                fs::create_dir_all(dossier).map_err(echec)?;
-            }
-        }
         let texte: String = self
             .entrees
             .iter()
             .map(|entree| entree.vers_ligne() + "\n")
             .collect();
-        // On écrit dans un fichier temporaire puis on le renomme : si le programme s'arrête
-        // en plein milieu, l'ancien classement reste intact
-        let temporaire = self.chemin.with_extension("tmp");
-        fs::write(&temporaire, texte).map_err(echec)?;
-        fs::rename(&temporaire, &self.chemin).map_err(echec)
+        ecrire_fichier(&self.chemin, &texte)
+            .map_err(|erreur| format!("Impossible d'enregistrer le classement : {}", erreur))
     }
 
     // Les `nombre` meilleurs scores d'une taille de grille, tous niveaux confondus ou pour un

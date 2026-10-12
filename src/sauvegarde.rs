@@ -3,7 +3,7 @@
 use crate::grille::{Grille, Niveau, Origine, Taille};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Première ligne du fichier : elle permet de refuser un fichier d'un autre format
 const ENTETE: &str = "sudoko-partie 1";
@@ -21,6 +21,19 @@ pub fn dossier_donnees() -> Option<PathBuf> {
         .map(|dossier| dossier.join("Sudoko"))
 }
 
+// Écrit un fichier en créant son dossier au besoin. On écrit d'abord dans un fichier temporaire
+// puis on le renomme : si le programme s'arrête en plein milieu, l'ancien fichier reste intact.
+pub fn ecrire_fichier(chemin: &Path, texte: &str) -> std::io::Result<()> {
+    if let Some(dossier) = chemin.parent() {
+        if !dossier.as_os_str().is_empty() {
+            fs::create_dir_all(dossier)?;
+        }
+    }
+    let temporaire = chemin.with_extension("tmp");
+    fs::write(&temporaire, texte)?;
+    fs::rename(&temporaire, chemin)
+}
+
 // Tout ce qu'il faut pour reprendre une partie là où on l'a laissée
 pub struct PartieSauvee {
     pub grille: Grille,
@@ -29,6 +42,8 @@ pub struct PartieSauvee {
     pub indices: u32,
     // Le temps de jeu déjà écoulé
     pub secondes: u64,
+    // Les notes au crayon de chaque case, en bits (le bit v - 1 = la note v), dans l'ordre des cases
+    pub notes: Vec<u16>,
 }
 
 impl PartieSauvee {
@@ -68,6 +83,11 @@ impl PartieSauvee {
         );
         if let Some(solution) = self.grille.solution() {
             texte += &format!("solution\t{}\n", nombres(solution));
+        }
+        // Sans note, on n'écrit rien
+        if self.notes.iter().any(|&note| note != 0) {
+            let notes: Vec<String> = self.notes.iter().map(u16::to_string).collect();
+            texte += &format!("notes\t{}\n", notes.join(","));
         }
         texte
     }
@@ -116,12 +136,31 @@ impl PartieSauvee {
         )
         .ok()?;
 
+        // Les notes sont facultatives (les anciennes sauvegardes n'en ont pas)
+        let notes = match champs.get("notes") {
+            Some(texte) => texte
+                .split(',')
+                .map(|note| note.parse().ok())
+                .collect::<Option<Vec<u16>>>()?,
+            None => vec![0; taille.cases()],
+        };
+        // Une note par case, avec des chiffres de la grille, et seulement dans une case vide
+        let cote = taille.cote();
+        let notes_valides = notes.len() == taille.cases()
+            && notes.iter().zip(grille.cases()).all(|(&note, &valeur)| {
+                (note as u32) < (1 << cote) && (note == 0 || valeur == 0)
+            });
+        if !notes_valides {
+            return None;
+        }
+
         Some(PartieSauvee {
             grille,
             origine,
             erreurs: champs.get("erreurs")?.parse().ok()?,
             indices: champs.get("indices")?.parse().ok()?,
             secondes: champs.get("secondes")?.parse().ok()?,
+            notes,
         })
     }
 }
@@ -152,18 +191,8 @@ impl Sauvegarde {
 
     // Remplace la sauvegarde par cette partie
     pub fn enregistrer(&self, partie: &PartieSauvee) -> Result<(), String> {
-        let echec = |erreur: std::io::Error| format!("Impossible de sauvegarder la partie : {}", erreur);
-
-        if let Some(dossier) = self.chemin.parent() {
-            if !dossier.as_os_str().is_empty() {
-                fs::create_dir_all(dossier).map_err(echec)?;
-            }
-        }
-        // On écrit dans un fichier temporaire puis on le renomme : si le programme s'arrête
-        // en plein milieu, l'ancienne sauvegarde reste intacte
-        let temporaire = self.chemin.with_extension("tmp");
-        fs::write(&temporaire, partie.vers_texte()).map_err(echec)?;
-        fs::rename(&temporaire, &self.chemin).map_err(echec)
+        ecrire_fichier(&self.chemin, &partie.vers_texte())
+            .map_err(|erreur| format!("Impossible de sauvegarder la partie : {}", erreur))
     }
 
     // Efface la sauvegarde : la partie est finie. Sans fichier, il n'y a rien à faire.
@@ -189,12 +218,16 @@ mod tests {
         let vides: Vec<usize> = (0..36).filter(|&i| !grille.fixes()[i]).collect();
         let (ligne, col) = (vides[0] / 6, vides[0] % 6);
         assert!(grille.placer(ligne, col, solution[vides[0]]));
+        // Et deux notes (les chiffres 1 et 3) dans une autre case vide
+        let mut notes = vec![0; 36];
+        notes[vides[1]] = 0b101;
         PartieSauvee {
             grille,
             origine: Origine::Niveau(Niveau::Moyen, Taille::Six),
             erreurs: 2,
             indices: 1,
             secondes: 754,
+            notes,
         }
     }
 
@@ -211,6 +244,7 @@ mod tests {
         assert_eq!(relue.grille.cases(), partie.grille.cases());
         assert_eq!(relue.grille.fixes(), partie.grille.fixes());
         assert_eq!(relue.grille.solution(), partie.grille.solution());
+        assert_eq!(relue.notes, partie.notes);
     }
 
     #[test]
@@ -221,6 +255,7 @@ mod tests {
             erreurs: 0,
             indices: 0,
             secondes: 0,
+            notes: vec![0; 81],
         };
         let relue = PartieSauvee::depuis_texte(&partie.vers_texte()).unwrap();
         assert_eq!(relue.origine, Origine::Fixe);
@@ -230,17 +265,24 @@ mod tests {
     #[test]
     fn test_aller_retour_dans_chaque_taille() {
         for taille in Taille::TOUTES {
+            let grille = Grille::generer_niveau(Niveau::Facile, taille);
+            // Une case vide avec tous les chiffres en notes (65535 en 16×16)
+            let mut notes = vec![0; taille.cases()];
+            let vide = grille.cases().iter().position(|&valeur| valeur == 0).unwrap();
+            notes[vide] = ((1u32 << taille.cote()) - 1) as u16;
             let partie = PartieSauvee {
-                grille: Grille::generer_niveau(Niveau::Facile, taille),
+                grille,
                 origine: Origine::Niveau(Niveau::Facile, taille),
                 erreurs: 0,
                 indices: 0,
                 secondes: 5,
+                notes,
             };
             let relue = PartieSauvee::depuis_texte(&partie.vers_texte()).unwrap();
             assert_eq!(relue.grille.taille(), taille);
             assert_eq!(relue.grille.cases(), partie.grille.cases());
             assert_eq!(relue.grille.solution(), partie.grille.solution());
+            assert_eq!(relue.notes, partie.notes);
         }
     }
 
@@ -292,6 +334,44 @@ mod tests {
         let fixes: String = partie.grille.fixes().iter().map(|&f| if f { '1' } else { '0' }).collect();
         let abimees = fixes.replacen('0', "x", 1);
         assert!(PartieSauvee::depuis_texte(&texte.replace(&fixes, &abimees)).is_none());
+    }
+
+    #[test]
+    fn test_une_sauvegarde_sans_notes_se_relit() {
+        // Les sauvegardes écrites avant les notes n'ont pas de ligne `notes`
+        let mut partie = partie_en_cours();
+        partie.notes = vec![0; 36];
+        let texte = partie.vers_texte();
+        assert!(!texte.contains("notes"));
+        let relue = PartieSauvee::depuis_texte(&texte).unwrap();
+        assert_eq!(relue.notes, vec![0; 36]);
+    }
+
+    #[test]
+    fn test_des_notes_incoherentes_sont_refusees() {
+        let partie = partie_en_cours();
+        let texte = partie.vers_texte();
+        let ligne = texte.lines().find(|ligne| ligne.starts_with("notes")).unwrap();
+
+        // Trop peu de notes
+        let court = ligne.rsplit_once(',').unwrap().0;
+        assert!(PartieSauvee::depuis_texte(&texte.replace(ligne, court)).is_none());
+
+        // Une note avec un chiffre qui n'existe pas en 6×6 (le chiffre 7 : bit 6)
+        let trop_grand = ligne.replace("5,", "64,");
+        assert!(PartieSauvee::depuis_texte(&texte.replace(ligne, &trop_grand)).is_none());
+
+        // Pas un nombre
+        let pas_un_nombre = ligne.replace("5,", "x,");
+        assert!(PartieSauvee::depuis_texte(&texte.replace(ligne, &pas_un_nombre)).is_none());
+
+        // Une note dans une case de départ : la première case de départ reçoit une note
+        let depart = partie.grille.fixes().iter().position(|&fixe| fixe).unwrap();
+        let mut notes = partie.notes.clone();
+        notes[depart] = 1;
+        let liste: Vec<String> = notes.iter().map(u16::to_string).collect();
+        let sur_un_depart = format!("notes\t{}", liste.join(","));
+        assert!(PartieSauvee::depuis_texte(&texte.replace(ligne, &sur_un_depart)).is_none());
     }
 
     #[test]

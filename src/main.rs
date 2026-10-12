@@ -6,6 +6,7 @@ mod gui;
 mod jeu;
 mod sauvegarde;
 mod solveur;
+mod statistiques;
 
 use grille::{Grille, Niveau, Origine, Taille};
 
