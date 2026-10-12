@@ -1202,20 +1202,23 @@ impl Application {
                         ui.add_space(8.0);
 
                         ui.label(RichText::new("Variante").weak());
-                        ui.columns(Variante::TOUTES.len(), |colonnes| {
-                            for (colonne, variante) in colonnes.iter_mut().zip(Variante::TOUTES) {
-                                let choisie = self.variante_choisie == variante;
-                                let accepte = variante.accepte(self.taille_choisie);
-                                let bouton = egui::Button::selectable(choisie, variante.libelle());
-                                let largeur_colonne = colonne.available_width();
-                                let reponse = colonne
-                                    .add_enabled_ui(accepte, |ui| ui.add_sized([largeur_colonne, 32.0], bouton))
-                                    .inner;
-                                if reponse.clicked() {
-                                    self.variante_choisie = variante;
+                        // Trois variantes par ligne
+                        for ligne in Variante::TOUTES.chunks(3) {
+                            ui.columns(3, |colonnes| {
+                                for (colonne, &variante) in colonnes.iter_mut().zip(ligne) {
+                                    let choisie = self.variante_choisie == variante;
+                                    let accepte = variante.accepte(self.taille_choisie);
+                                    let bouton = egui::Button::selectable(choisie, variante.libelle());
+                                    let largeur_colonne = colonne.available_width();
+                                    let reponse = colonne
+                                        .add_enabled_ui(accepte, |ui| ui.add_sized([largeur_colonne, 32.0], bouton))
+                                        .inner;
+                                    if reponse.clicked() {
+                                        self.variante_choisie = variante;
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                         ui.small(self.variante_choisie.regle());
                         ui.add_space(8.0);
 
@@ -3080,5 +3083,14 @@ mod tests {
         assert_eq!(libelle_format(Taille::Neuf, Variante::Classique), "9×9");
         assert_eq!(libelle_format(Taille::Neuf, Variante::Diagonale), "9×9 diagonale");
         assert_eq!(libelle_format(Taille::Douze, Variante::AntiCavalier), "12×12 anti-cavalier");
+    }
+
+    #[test]
+    fn test_une_partie_irreguliere_se_sauvegarde_avec_ses_blocs() {
+        let partie = partie_en_variante(Variante::Irregulier);
+        let blocs = partie.grille.regles().bloc_de.clone();
+        let restauree = Partie::restaurer(partie.vers_sauvegarde()).unwrap();
+        assert_eq!(restauree.grille.regles().bloc_de, blocs);
+        assert_eq!(restauree.grille.variante(), Variante::Irregulier);
     }
 }

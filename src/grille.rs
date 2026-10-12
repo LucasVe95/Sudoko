@@ -188,6 +188,7 @@ impl Grille {
     // Reconstruit une grille à partir de ce qui a été enregistré. Le fichier a pu être abîmé
     // ou modifié à la main : on refuse tout ce qui romprait les règles de la grille,
     // plutôt que de planter plus tard.
+    #[cfg(test)]
     pub fn restaurer(
         taille: Taille,
         variante: Variante,
@@ -196,6 +197,19 @@ impl Grille {
         fixes: Vec<bool>,
         solution: Option<Vec<u8>>,
     ) -> Result<Grille, String> {
+        Grille::restaurer_avec_regles(Regles::pour(taille, variante), nom, cases, fixes, solution)
+    }
+
+    // Comme `restaurer`, avec des règles déjà construites (les blocs d'une grille irrégulière
+    // ne se devinent pas : ils sont enregistrés avec la partie)
+    pub fn restaurer_avec_regles(
+        regles: Arc<Regles>,
+        nom: String,
+        cases: Vec<u8>,
+        fixes: Vec<bool>,
+        solution: Option<Vec<u8>>,
+    ) -> Result<Grille, String> {
+        let taille = regles.taille;
         let nombre = taille.cases();
         if cases.len() != nombre || fixes.len() != nombre {
             return Err(format!("{} cases attendues", nombre));
@@ -203,7 +217,6 @@ impl Grille {
         // Pas de chiffre hors de la grille, et pas de doublon dans une ligne, une colonne ou un bloc
         // parmi les cases de départ. Les chiffres du joueur peuvent, eux, se contredire : il a le
         // droit de se tromper.
-        let regles = Regles::pour(taille, variante);
         let cote = taille.cote();
         let depart: Vec<u8> = cases
             .iter()
@@ -322,14 +335,17 @@ impl Grille {
         }
         let separateur = segments.join("+");
 
+        // Les blocs d'une grille irrégulière ne sont pas des rectangles : on ne trace pas de séparateurs
+        // (ils seraient faux) et on affiche à la place la carte des blocs sous la grille
+        let separateurs = self.variante() != Variante::Irregulier;
         for ligne in 0..cote {
             // Séparateur horizontal entre les blocs
-            if ligne % bloc_h == 0 && ligne != 0 {
+            if separateurs && ligne % bloc_h == 0 && ligne != 0 {
                 println!("{}", separateur);
             }
             for col in 0..cote {
                 // Séparateur vertical entre les blocs
-                if col % bloc_l == 0 && col != 0 {
+                if separateurs && col % bloc_l == 0 && col != 0 {
                     print!("| ");
                 }
                 // Une case vide (0) s'affiche avec un point
@@ -340,6 +356,30 @@ impl Grille {
             }
             println!();
         }
+        if !separateurs {
+            println!("Blocs :");
+            print!("{}", self.carte_des_blocs());
+        }
+    }
+
+    // La carte des blocs d'une grille irrégulière : une lettre par bloc (A, B, C...), case par case,
+    // pour reconnaître les blocs au terminal
+    fn carte_des_blocs(&self) -> String {
+        let cote = self.taille.cote();
+        let mut carte = String::new();
+        for ligne in 0..cote {
+            let lettres: Vec<String> = (0..cote)
+                .map(|col| {
+                    let bloc = self.regles.bloc_de[ligne * cote + col] as u8;
+                    // Deux caractères de large dès qu'il y a des nombres à deux chiffres, comme la grille
+                    let lettre = (b'A' + bloc) as char;
+                    if cote >= 10 { format!("{:>2}", lettre) } else { lettre.to_string() }
+                })
+                .collect();
+            carte += &lettres.join(" ");
+            carte.push('\n');
+        }
+        carte
     }
 
     // Vérifie si on peut mettre `valeur` dans la case (ligne, col) sans briser les règles :
@@ -614,12 +654,25 @@ impl Grille {
         if variante != Variante::Classique {
             nom += &format!(" {}", variante.libelle().to_lowercase());
         }
-        let regles = Regles::pour(taille, variante);
         let mut rng = rand::rng();
         let debut = Instant::now();
 
         let mut meilleur: Option<Essai> = None;
+        // Une grille irrégulière a ses propres blocs, tirés au hasard. Jusqu'en 9×9, on en tire de
+        // nouveaux à chaque essai ; au-delà, trouver des blocs qui admettent une grille prend
+        // trop de temps pour le refaire : tous les essais partagent les mêmes.
+        let partagees = if variante == Variante::Irregulier {
+            Regles::irregulier_aleatoire(taille, &mut rng)
+        } else {
+            Regles::pour(taille, variante)
+        };
+        let nouvelles_par_essai = variante == Variante::Irregulier && taille.cote() <= 9;
         for _ in 0..ESSAIS_MAX {
+            let regles = if nouvelles_par_essai {
+                Regles::irregulier_aleatoire(taille, &mut rng)
+            } else {
+                Arc::clone(&partagees)
+            };
             let essai = Grille::essayer_niveau(&regles, niveau, &mut rng);
             let conforme = essai.conforme;
             if meilleur.as_ref().is_none_or(|actuel| essai.score() > actuel.score()) {
@@ -632,7 +685,7 @@ impl Grille {
         let essai = meilleur.expect("au moins un essai a été fait");
 
         // Les chiffres restants forment la grille de départ : on les verrouille
-        let mut grille = Grille::avec_regles(regles, nom);
+        let mut grille = Grille::avec_regles(essai.regles, nom);
         grille.fixes = essai.cases.iter().map(|&valeur| valeur != 0).collect();
         grille.cases = essai.cases;
         grille.solution = Some(essai.solution);
@@ -675,7 +728,7 @@ impl Grille {
         }
         let conforme =
             retirees >= cible && (!exige_les_techniques || plus_difficile.niveau() >= niveau);
-        Essai { cases, solution, retirees, plus_difficile, conforme }
+        Essai { regles: Arc::clone(regles), cases, solution, retirees, plus_difficile, conforme }
     }
 
     // Génère une grille à solution unique en retirant `a_retirer` cases (au plus) d'une
@@ -729,6 +782,8 @@ pub struct Indice {
 
 // Un essai de génération d'une grille de niveau donné
 struct Essai {
+    // Les règles de la grille (pour une grille irrégulière, ses blocs)
+    regles: Arc<Regles>,
     cases: Vec<u8>,
     solution: Vec<u8>,
     retirees: usize,
@@ -1681,5 +1736,115 @@ mod tests {
             }
         }
         assert!(vue, "aucune explication n'a nommé une diagonale");
+    }
+
+    #[test]
+    fn test_une_grille_irreguliere_a_ses_propres_blocs() {
+        for taille in [Taille::Quatre, Taille::Six, Taille::Neuf] {
+            let g = Grille::generer_niveau(Niveau::Facile, taille, Variante::Irregulier);
+            assert_eq!(g.variante(), Variante::Irregulier);
+            assert!(g.nom.ends_with(" irrégulier"), "{}", g.nom);
+            // Chaque case a un bloc et chaque bloc a `côté` cases
+            let cote = taille.cote();
+            for bloc in 0..cote {
+                assert_eq!(g.regles().bloc_de.iter().filter(|&&b| b == bloc).count(), cote);
+            }
+        }
+    }
+
+    #[test]
+    fn test_deux_grilles_irregulieres_n_ont_pas_les_memes_blocs() {
+        let premiere = Grille::generer_niveau(Niveau::Facile, Taille::Neuf, Variante::Irregulier);
+        let differente = (0..10).any(|_| {
+            Grille::generer_niveau(Niveau::Facile, Taille::Neuf, Variante::Irregulier).regles().bloc_de
+                != premiere.regles().bloc_de
+        });
+        assert!(differente, "dix grilles de suite avec les mêmes blocs");
+    }
+
+    #[test]
+    fn test_les_regles_d_une_grille_irreguliere_sont_celles_de_ses_blocs() {
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Neuf, Variante::Irregulier);
+        let regles = g.regles();
+        // Une case et les cases de son bloc se l'interdisent le même chiffre
+        for case in 0..81 {
+            let bloc = regles.bloc_de[case];
+            for autre in 0..81 {
+                if autre != case && regles.bloc_de[autre] == bloc {
+                    assert!(regles.voisines[case].contains(&autre));
+                }
+            }
+        }
+        // La solution connue respecte ces blocs
+        assert!(respecte_sa_variante(&g, g.solution().unwrap()));
+    }
+
+    #[test]
+    fn test_restaurer_avec_les_blocs_d_une_grille_irreguliere() {
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Six, Variante::Irregulier);
+        let restauree = Grille::restaurer_avec_regles(
+            Arc::clone(g.regles()),
+            g.nom.clone(),
+            g.cases.clone(),
+            g.fixes.clone(),
+            g.solution.clone(),
+        )
+        .unwrap();
+        assert_eq!(restauree.regles().bloc_de, g.regles().bloc_de);
+        // Avec les blocs rectangulaires, la solution ne convient en général plus : la restauration
+        // refuse alors la grille, ou l'accepte si elle convient par hasard aux deux
+        let rectangulaires = Grille::restaurer_avec_regles(
+            Regles::classique(Taille::Six),
+            g.nom.clone(),
+            g.cases.clone(),
+            g.fixes.clone(),
+            g.solution.clone(),
+        );
+        if g.regles().bloc_de != Regles::classique(Taille::Six).bloc_de {
+            if let Ok(grille) = rectangulaires {
+                assert!(respecte_sa_variante(&grille, grille.solution().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn test_les_explications_d_une_grille_irreguliere_nomment_une_region() {
+        let mut vue = false;
+        for _ in 0..30 {
+            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf, Variante::Irregulier);
+            while let Some(indice) = g.indice() {
+                if indice.explication.contains("région de la case") {
+                    vue = true;
+                }
+                // En irrégulier, on ne parle jamais d'un « bloc » numéroté
+                assert!(!indice.explication.contains("le bloc"), "{}", indice.explication);
+            }
+            if vue {
+                break;
+            }
+        }
+        assert!(vue, "aucune explication n'a nommé une région");
+    }
+
+    #[test]
+    fn test_la_carte_des_blocs_d_une_grille_irreguliere() {
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Six, Variante::Irregulier);
+        let carte = g.carte_des_blocs();
+        let lignes: Vec<&str> = carte.lines().collect();
+        assert_eq!(lignes.len(), 6);
+        // Une lettre par case, A à F, chacune six fois
+        let lettres: Vec<char> = carte.chars().filter(|c| c.is_ascii_uppercase()).collect();
+        assert_eq!(lettres.len(), 36);
+        for lettre in 'A'..='F' {
+            assert_eq!(lettres.iter().filter(|&&c| c == lettre).count(), 6, "{}", lettre);
+        }
+        // Les lettres suivent les blocs de la grille
+        for case in 0..36 {
+            let attendu = (b'A' + g.regles().bloc_de[case] as u8) as char;
+            assert_eq!(lettres[case], attendu);
+        }
+        // En 12×12 et plus, chaque lettre est sur deux caractères
+        let grande = Grille::generer_niveau(Niveau::Facile, Taille::Douze, Variante::Irregulier);
+        assert!(grande.carte_des_blocs().lines().all(|ligne| ligne.chars().count() == 12 * 2 + 11));
     }
 }

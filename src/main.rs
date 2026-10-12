@@ -138,6 +138,16 @@ mod tests {
     }
 
     #[test]
+    fn test_lire_origine_irregulier_dans_toutes_les_tailles() {
+        for taille in ["4", "6", "9", "12", "16"] {
+            assert!(matches!(
+                lire_origine("facile", Some(taille), Some("irregulier")),
+                Ok(Origine::Niveau(Niveau::Facile, _, Variante::Irregulier))
+            ));
+        }
+    }
+
+    #[test]
     fn test_lire_origine_refuse_ce_qui_n_existe_pas() {
         // Une variante inconnue, ou qui n'existe pas dans cette taille
         let erreur = lire_origine("facile", Some("9"), Some("bizarre")).unwrap_err();

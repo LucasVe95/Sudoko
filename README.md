@@ -21,7 +21,7 @@ Déjà présent :
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille et par variante, conservé d'une session à l'autre
 - Statistiques par taille, par variante et par niveau : victoires, meilleur temps, séries
-- **Variantes** : diagonale, hyper et anti-cavalier, en plus du Sudoku classique
+- **Variantes** : diagonale, hyper, anti-cavalier et blocs irréguliers, en plus du Sudoku classique
 - Réglages : thème clair ou sombre, mode daltonien, sons, mise en valeur des cases
 - Résolution d'une grille de journal saisie ou collée, avec détection des erreurs de saisie et des grilles à plusieurs solutions
 - Notes au crayon dans les cases vides, avec un remplissage automatique des chiffres permis
@@ -33,7 +33,7 @@ Déjà présent :
 
 ### Dans la fenêtre (par défaut)
 
-Le programme s'ouvre sur le **menu** : choisissez une taille de grille (4×4 à 16×16), une variante (`Classique`, `Diagonale`, `Hyper`, `Anti-cavalier`) puis un niveau (`Facile`, `Moyen`, `Difficile`), ou lancez la grille d'entraînement, ou reprenez la partie en cours.
+Le programme s'ouvre sur le **menu** : choisissez une taille de grille (4×4 à 16×16), une variante (`Classique`, `Diagonale`, `Hyper`, `Anti-cavalier`, `Irrégulier`) puis un niveau (`Facile`, `Moyen`, `Difficile`), ou lancez la grille d'entraînement, ou reprenez la partie en cours.
 
 **La difficulté se mesure aux techniques.** Une grille n'est pas plus difficile parce qu'elle a plus de cases vides, mais parce qu'il faut des déductions plus subtiles pour la finir. Le programme résout chaque grille générée comme un humain, sans jamais deviner, en essayant les techniques de la plus simple à la plus difficile, et il mesure la plus difficile dont il a eu besoin :
 
@@ -119,15 +119,18 @@ Les statistiques sont dans un fichier texte à côté du classement, que l'on pe
 
 ### Variantes
 
-Le menu propose, en plus du Sudoku classique, trois variantes qui ajoutent une règle. Les zones qui comptent en plus sont colorées dans la grille, et la règle est rappelée sous le titre de la partie.
+Le menu propose, en plus du Sudoku classique, quatre variantes. Les zones qui comptent en plus sont colorées dans la grille, et la règle est rappelée sous le titre de la partie.
 
 | Variante | Règle en plus | Tailles |
 | -------- | ------------- | ------- |
 | **Diagonale** | Les deux grandes diagonales contiennent aussi chaque nombre une seule fois. | toutes |
 | **Hyper** | Quatre fenêtres de 3×3, en couleur, contiennent aussi chaque nombre une seule fois. | 9×9 |
 | **Anti-cavalier** | Deux cases séparées par un saut de cavalier (comme aux échecs) n'ont pas le même nombre. | toutes |
+| **Irrégulier** | Les blocs ne sont plus des rectangles : ce sont des formes quelconques, cernées de traits épais, qui contiennent chacune chaque nombre une seule fois. | toutes |
 
 Tout fonctionne comme en classique : les trois niveaux (mesurés aux techniques de déduction, les diagonales et les fenêtres comptant comme des zones pour « chiffre unique », les paires, les intersections...), les indices expliqués, les notes, l'annulation, les chiffres faux en rouge et la sauvegarde. En sélectionnant une case, on met en valeur toutes les cases qui ne peuvent pas contenir le même nombre : pour l'anti-cavalier, cela montre les sauts de cavalier. Le score, le classement et les statistiques sont séparés par variante.
+
+**Blocs irréguliers.** Chaque partie a ses propres blocs, tirés au hasard : le programme déforme les blocs rectangulaires en échangeant des cases entre blocs voisins, tant que chaque bloc reste d'un seul morceau, qu'aucun n'est une ligne droite (ce serait une copie d'une ligne ou d'une colonne) et qu'une grille complète existe. Plus la grille est grande, plus les formes sont tordues avec prudence (un tiers des cases changent de bloc en 9×9, un quart en 12×12, environ un seizième en 16×16), car des blocs très tordus n'admettent souvent aucune grille. Les explications des indices désignent un bloc par une de ses cases (« dans la région de la case (ligne 3, colonne 4) »), puisque ces blocs n'ont pas de numéro visible. La génération est un peu plus longue qu'en classique : jusqu'à environ 1,5 seconde en 16×16 (4 secondes en difficile), en mode `--release`. Les blocs sont enregistrés avec la partie sauvegardée.
 
 L'écran « Résoudre une grille » ne gère que les grilles classiques.
 
@@ -185,7 +188,7 @@ cargo run
 
 La première compilation télécharge et compile l'interface graphique : elle prend quelques minutes et beaucoup de mémoire. Si elle échoue par manque de mémoire, limitez le parallélisme avec `cargo build -j 2`. Les compilations suivantes sont rapides.
 
-Sans argument, le programme ouvre la fenêtre sur le menu. Pour lancer directement une partie, donnez le niveau, puis éventuellement la taille de la grille (4, 6, 9, 12 ou 16 ; 9 par défaut) et la variante (`classique` par défaut, `diagonale`, `hyper` ou `anticavalier`) :
+Sans argument, le programme ouvre la fenêtre sur le menu. Pour lancer directement une partie, donnez le niveau, puis éventuellement la taille de la grille (4, 6, 9, 12 ou 16 ; 9 par défaut) et la variante (`classique` par défaut, `diagonale`, `hyper`, `anticavalier` ou `irregulier`) :
 
 ```bash
 cargo run -- facile          # grille 9×9 facile
@@ -193,6 +196,7 @@ cargo run -- difficile 16    # grille 16×16 difficile
 cargo run -- moyen 6         # grille 6×6 moyenne
 cargo run -- moyen 9 diagonale     # grille 9×9 moyenne en diagonale
 cargo run -- difficile 12 anticavalier
+cargo run -- facile 9 irregulier
 cargo run -- fixe            # toujours la même grille d'entraînement (9×9 seulement)
 ```
 
@@ -204,7 +208,7 @@ cargo run -- terminal facile 12    # ou difficile, fixe ; taille 4, 6, 9, 12 ou 
 cargo run -- terminal moyen 9 hyper
 ```
 
-Au terminal, une variante n'est pas colorée : la règle en plus est rappelée au début de la partie.
+Au terminal, une variante n'est pas colorée : la règle en plus est rappelée au début de la partie. Pour une grille irrégulière, le terminal ne trace pas de séparateurs de blocs (ils seraient faux) : il affiche sous la grille une carte des blocs, une lettre par bloc (A, B, C...).
 
 La génération d'une grille prend en général moins d'une seconde, et quelques secondes au plus pour une grande grille difficile avec `cargo run`. Elle est bien plus rapide avec `cargo run --release` (environ une seconde au plus, pour une 16×16 difficile).
 
@@ -257,7 +261,7 @@ Sudoko/
 │   ├── statistiques.rs # Parties terminées enregistrées dans un fichier, et calcul des statistiques
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
 │   ├── reglages.rs # Réglages du joueur (thème, couleurs, sons) enregistrés dans un fichier
-│   ├── regles.rs # Les règles d'une grille : zones, voisines, variantes (diagonale, hyper, anti-cavalier)
+│   ├── regles.rs # Les règles d'une grille : zones, voisines, variantes (diagonale, hyper, anti-cavalier, blocs irréguliers)
 │   ├── resolveur.rs # Saisie d'une grille 9×9 et sa résolution (écran « Résoudre une grille »)
 │   ├── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte), pour toutes les variantes
 │   ├── technique.rs # Résolution « à la main » par déduction : mesure de la difficulté et explication des indices

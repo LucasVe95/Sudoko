@@ -1,7 +1,7 @@
 //! La sauvegarde de la partie en cours, pour la reprendre à la prochaine ouverture du jeu.
 
 use crate::grille::{Grille, Niveau, Origine, Taille};
-use crate::regles::Variante;
+use crate::regles::{Regles, Variante};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,6 +83,11 @@ impl PartieSauvee {
             nombres(self.grille.cases()),
             fixes
         );
+        // Les blocs d'une grille irrégulière ne se devinent pas : on les enregistre
+        if self.grille.variante() == Variante::Irregulier {
+            let blocs: Vec<String> = self.grille.regles().bloc_de.iter().map(usize::to_string).collect();
+            texte += &format!("regions\t{}\n", blocs.join(","));
+        }
         if let Some(solution) = self.grille.solution() {
             texte += &format!("solution\t{}\n", nombres(solution));
         }
@@ -137,9 +142,19 @@ impl PartieSauvee {
             Some(texte) => Some(nombres(texte)?),
             None => None,
         };
-        let grille = Grille::restaurer(
-            taille,
-            variante,
+        // Les règles : celles de la variante, ou pour une grille irrégulière les blocs enregistrés
+        let regles = if variante == Variante::Irregulier {
+            let blocs = champs
+                .get("regions")?
+                .split(',')
+                .map(|bloc| bloc.parse().ok())
+                .collect::<Option<Vec<usize>>>()?;
+            Regles::irregulier(taille, blocs)?
+        } else {
+            Regles::pour(taille, variante)
+        };
+        let grille = Grille::restaurer_avec_regles(
+            regles,
             champs.get("nom")?.to_string(),
             nombres(champs.get("cases")?)?,
             fixes,
@@ -510,5 +525,54 @@ mod tests {
         sauvegarde.enregistrer(&partie_en_cours()).unwrap();
         assert!(sauvegarde.charger().is_some());
         nettoyer(&sauvegarde);
+    }
+
+    fn partie_irreguliere() -> PartieSauvee {
+        let grille = Grille::generer_niveau(Niveau::Facile, Taille::Neuf, Variante::Irregulier);
+        PartieSauvee {
+            origine: Origine::Niveau(Niveau::Facile, Taille::Neuf, Variante::Irregulier),
+            erreurs: 0,
+            indices: 0,
+            secondes: 12,
+            notes: vec![0; 81],
+            grille,
+        }
+    }
+
+    #[test]
+    fn test_les_blocs_d_une_grille_irreguliere_sont_enregistres() {
+        let partie = partie_irreguliere();
+        let texte = partie.vers_texte();
+        assert!(texte.contains("variante\tirregulier"));
+        assert!(texte.lines().any(|ligne| ligne.starts_with("regions\t")));
+        let relue = PartieSauvee::depuis_texte(&texte).unwrap();
+        assert_eq!(relue.grille.variante(), Variante::Irregulier);
+        assert_eq!(relue.grille.regles().bloc_de, partie.grille.regles().bloc_de);
+        assert_eq!(relue.grille.cases(), partie.grille.cases());
+        assert_eq!(relue.grille.solution(), partie.grille.solution());
+    }
+
+    #[test]
+    fn test_des_blocs_abimes_font_refuser_la_sauvegarde() {
+        let texte = partie_irreguliere().vers_texte();
+        let ligne = texte.lines().find(|ligne| ligne.starts_with("regions\t")).unwrap().to_string();
+        // Pas de blocs du tout
+        let sans: String = texte
+            .lines()
+            .filter(|l| !l.starts_with("regions"))
+            .map(|l| format!("{}\n", l))
+            .collect();
+        assert!(PartieSauvee::depuis_texte(&sans).is_none());
+        // Un nombre invalide, trop peu de blocs, un numéro de bloc trop grand
+        assert!(PartieSauvee::depuis_texte(&texte.replace(&ligne, "regions\tx,1,2")).is_none());
+        let court = ligne.rsplit_once(',').unwrap().0.to_string();
+        assert!(PartieSauvee::depuis_texte(&texte.replace(&ligne, &court)).is_none());
+        assert!(PartieSauvee::depuis_texte(&texte.replace(&ligne, &ligne.replacen('\t', "\t99,", 1))).is_none());
+        // Des blocs de tailles inégales : on remplace le premier numéro par un autre
+        let mut champs: Vec<&str> = ligne["regions\t".len()..].split(',').collect();
+        let autre = if champs[0] == "0" { "1" } else { "0" };
+        champs[0] = autre;
+        let inegaux = format!("regions\t{}", champs.join(","));
+        assert!(PartieSauvee::depuis_texte(&texte.replace(&ligne, &inegaux)).is_none());
     }
 }

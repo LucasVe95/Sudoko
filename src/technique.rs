@@ -127,7 +127,7 @@ impl Pas {
             .collect();
         let cases = cases.join(", ");
         let chiffres = chiffres_texte(self.chiffres);
-        let zone = self.zone.map(Zone::dans).unwrap_or_default();
+        let zone = self.zone.map(|zone| zone.dans(geometrie)).unwrap_or_default();
 
         match self.technique {
             Technique::CaseUnique => format!(
@@ -147,8 +147,8 @@ impl Pas {
                     "Intersection : {}, le {} ne peut aller que {} ; on peut donc le retirer des autres cases {}.",
                     zone,
                     chiffres,
-                    autre.dans(),
-                    autre.de()
+                    autre.dans(geometrie),
+                    autre.de(geometrie)
                 )
             }
             Technique::PaireNue => format!(
