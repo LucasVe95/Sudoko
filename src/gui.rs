@@ -160,6 +160,7 @@ enum Action {
 }
 
 // Ce que le joueur choisit dans le menu
+#[derive(Clone)]
 enum ChoixMenu {
     Reprendre,
     Nouvelle(Origine),
@@ -1122,79 +1123,103 @@ impl Application {
     }
 
     fn dessiner_menu(&mut self, ui: &mut egui::Ui) {
-        let reprise_possible = self.partie.as_ref().is_some_and(|partie| partie.fin.is_none());
         let occupe = self.generation.is_some();
         let mut choix = None;
         let palette = Palette::pour(ui.visuals().dark_mode, self.reglages.daltonien);
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(30.0);
-            ui.label(RichText::new("Sudoku").size(44.0).strong());
-            ui.label("Chaque ligne, colonne et bloc doit contenir chaque nombre une seule fois.");
-            ui.label(format!("{} erreurs et la partie est perdue.", MAX_ERREURS));
-            ui.add_space(24.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                // Tout le menu tient dans une colonne centrée, de largeur fixe
+                let largeur = (ui.available_width() - 32.0).clamp(300.0, 420.0);
 
-            if occupe {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Génération de la grille...");
-                });
-                ui.small("Une grande grille difficile peut prendre un moment.");
-                ui.add_space(8.0);
-            }
+                ui.add_space(20.0);
+                ui.label(RichText::new("Sudoku").size(44.0).strong());
+                ui.label("Chaque ligne, colonne et bloc doit contenir chaque nombre une seule fois.");
+                ui.label(format!("{} erreurs et la partie est perdue.", MAX_ERREURS));
+                ui.add_space(18.0);
 
-            ui.add_enabled_ui(!occupe, |ui| {
-                if reprise_possible && gros_bouton(ui, "Reprendre la partie") {
-                    choix = Some(ChoixMenu::Reprendre);
+                if occupe {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Génération de la grille...");
+                    });
+                    ui.small("Une grande grille difficile peut prendre un moment.");
+                    ui.add_space(8.0);
                 }
-                if let Some(partie) = self.partie.as_ref().filter(|partie| partie.fin.is_none()) {
-                    ui.small(format!("{} - {}", partie.grille.nom, formater_duree(partie.duree())));
-                }
-                ui.add_space(8.0);
-                ui.label("Nouvelle partie");
-                egui::ComboBox::from_label("Taille de la grille")
-                    .selected_text(self.taille_choisie.libelle())
-                    .show_ui(ui, |ui| {
-                        for taille in Taille::TOUTES {
-                            ui.selectable_value(&mut self.taille_choisie, taille, taille.libelle());
+
+                ui.allocate_ui(Vec2::new(largeur, 0.0), |ui| {
+                    ui.add_enabled_ui(!occupe, |ui| {
+                        // La partie en cours, s'il y en a une
+                        if let Some(partie) = self.partie.as_ref().filter(|partie| partie.fin.is_none()) {
+                            let reprendre = egui::Button::new(RichText::new("Reprendre la partie").size(16.0));
+                            if ui.add_sized([largeur, 44.0], reprendre).clicked() {
+                                choix = Some(ChoixMenu::Reprendre);
+                            }
+                            ui.small(format!("{} - {}", partie.grille.nom, formater_duree(partie.duree())));
+                            ui.add_space(6.0);
+                        }
+
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Nouvelle partie").size(18.0).strong());
+                        ui.add_space(6.0);
+
+                        ui.label(RichText::new("Taille de la grille").weak());
+                        ui.columns(Taille::TOUTES.len(), |colonnes| {
+                            for (colonne, taille) in colonnes.iter_mut().zip(Taille::TOUTES) {
+                                let choisie = self.taille_choisie == taille;
+                                let bouton = egui::Button::selectable(choisie, taille.libelle());
+                                let largeur_colonne = colonne.available_width();
+                                if colonne.add_sized([largeur_colonne, 32.0], bouton).clicked() {
+                                    self.taille_choisie = taille;
+                                }
+                            }
+                        });
+                        ui.add_space(8.0);
+
+                        ui.label(RichText::new("Niveau").weak());
+                        ui.columns(Niveau::TOUS.len(), |colonnes| {
+                            for (colonne, niveau) in colonnes.iter_mut().zip(Niveau::TOUS) {
+                                let largeur_colonne = colonne.available_width();
+                                let bouton = egui::Button::new(RichText::new(niveau.libelle()).size(16.0));
+                                if colonne.add_sized([largeur_colonne, 44.0], bouton).clicked() {
+                                    choix = Some(ChoixMenu::Nouvelle(Origine::Niveau(niveau, self.taille_choisie)));
+                                }
+                            }
+                        });
+                        ui.add_space(10.0);
+
+                        ui.separator();
+                        ui.add_space(6.0);
+                        // Les autres écrans, deux par ligne
+                        let autres = [
+                            ("Grille d'entraînement", ChoixMenu::Nouvelle(Origine::Fixe)),
+                            ("Résoudre une grille", ChoixMenu::Resolution),
+                            ("Classement", ChoixMenu::Classement),
+                            ("Statistiques", ChoixMenu::Statistiques),
+                            ("Réglages", ChoixMenu::Reglages),
+                            ("Quitter", ChoixMenu::Quitter),
+                        ];
+                        for ligne in autres.chunks(2) {
+                            ui.columns(2, |colonnes| {
+                                for (colonne, (texte, action)) in colonnes.iter_mut().zip(ligne) {
+                                    let largeur_colonne = colonne.available_width();
+                                    if colonne.add_sized([largeur_colonne, 38.0], egui::Button::new(*texte)).clicked() {
+                                        choix = Some(action.clone());
+                                    }
+                                }
+                            });
+                            ui.add_space(4.0);
                         }
                     });
-                ui.add_space(4.0);
-                for niveau in Niveau::TOUS {
-                    if gros_bouton(ui, niveau.libelle()) {
-                        choix = Some(ChoixMenu::Nouvelle(Origine::Niveau(niveau, self.taille_choisie)));
-                    }
-                }
-                ui.add_space(8.0);
-                if gros_bouton(ui, "Grille d'entraînement") {
-                    choix = Some(ChoixMenu::Nouvelle(Origine::Fixe));
-                }
-                ui.add_space(8.0);
-                if gros_bouton(ui, "Résoudre une grille") {
-                    choix = Some(ChoixMenu::Resolution);
-                }
-                ui.add_space(8.0);
-                if gros_bouton(ui, "Classement") {
-                    choix = Some(ChoixMenu::Classement);
-                }
-                ui.add_space(8.0);
-                if gros_bouton(ui, "Statistiques") {
-                    choix = Some(ChoixMenu::Statistiques);
-                }
-                ui.add_space(8.0);
-                if gros_bouton(ui, "Réglages") {
-                    choix = Some(ChoixMenu::Reglages);
+                });
+
+                if !self.erreur.is_empty() {
+                    ui.add_space(8.0);
+                    ui.colored_label(palette.rouge, self.erreur.as_str());
                 }
                 ui.add_space(16.0);
-                if gros_bouton(ui, "Quitter") {
-                    choix = Some(ChoixMenu::Quitter);
-                }
             });
-
-            if !self.erreur.is_empty() {
-                ui.add_space(8.0);
-                ui.colored_label(palette.rouge, self.erreur.as_str());
-            }
         });
 
         match choix {
@@ -1756,12 +1781,6 @@ fn dessiner_plateau(
         );
     }
     clic
-}
-
-// Un grand bouton pour le menu
-fn gros_bouton(ui: &mut egui::Ui, texte: &str) -> bool {
-    ui.add(egui::Button::new(texte).min_size(Vec2::new(240.0, 40.0)))
-        .clicked()
 }
 
 impl eframe::App for Application {
