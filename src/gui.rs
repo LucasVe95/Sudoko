@@ -4,6 +4,7 @@ use crate::classement::{
     calculer_score, maintenant, nettoyer_nom, penalite_erreur, penalite_indice, Classement, Entree,
 };
 use crate::grille::{Grille, Niveau, Origine, Taille};
+use crate::resolveur::Resolveur;
 use crate::sauvegarde::{PartieSauvee, Sauvegarde};
 use crate::statistiques::{PartieJouee, Resultat, Statistiques};
 use eframe::egui::{
@@ -80,6 +81,7 @@ enum ChoixMenu {
     Nouvelle(Origine),
     Classement,
     Statistiques,
+    Resolution,
     Quitter,
 }
 
@@ -675,130 +677,23 @@ impl Partie {
     fn dessiner_grille(&mut self, ui: &mut egui::Ui, cote_px: f32) {
         let taille = self.grille.taille();
         let nombre = taille.cote();
-        let (bloc_h, bloc_l) = (taille.bloc_h(), taille.bloc_l());
-        let (zone, reponse) = ui.allocate_exact_size(Vec2::splat(cote_px), Sense::click());
-        let case = cote_px / nombre as f32;
-
-        if reponse.clicked() {
-            if let Some(souris) = reponse.interact_pointer_pos() {
-                // Le chiffre en attente est joué dans l'ancienne case avant de changer de case
-                self.valider_tampon();
-                let col = (((souris.x - zone.min.x) / case) as usize).min(nombre - 1);
-                let ligne = (((souris.y - zone.min.y) / case) as usize).min(nombre - 1);
-                self.selection = Some((ligne, col));
-            }
-        }
-
-        let peintre = ui.painter_at(zone);
-        peintre.rect_filled(zone, 0.0, FOND);
-
-        // Les cases qui contiennent le même chiffre que la case choisie sont mises en valeur
-        let chiffre_choisi = self
-            .selection
-            .map(|(ligne, col)| self.grille.valeur(ligne, col))
-            .filter(|&valeur| valeur != 0);
-
-        for ligne in 0..nombre {
-            for col in 0..nombre {
-                let coin = Pos2::new(
-                    zone.min.x + col as f32 * case,
-                    zone.min.y + ligne as f32 * case,
-                );
-                let rectangle = Rect::from_min_size(coin, Vec2::splat(case));
-                let valeur = self.grille.valeur(ligne, col);
-
-                let fond = match self.selection {
-                    Some(choisie) if choisie == (ligne, col) => Some(CASE_SELECTIONNEE),
-                    _ if valeur != 0 && Some(valeur) == chiffre_choisi => Some(MEME_CHIFFRE),
-                    Some((l, c))
-                        if l == ligne
-                            || c == col
-                            || (l / bloc_h == ligne / bloc_h && c / bloc_l == col / bloc_l) =>
-                    {
-                        Some(LIGNE_COLONNE_BLOC)
-                    }
-                    _ => None,
-                };
-                if let Some(couleur) = fond {
-                    peintre.rect_filled(rectangle, 0.0, couleur);
-                }
-
-                if valeur != 0 {
-                    // Un chiffre du joueur qui n'est pas celui de la solution s'affiche en rouge
-                    let couleur = if self.grille.est_fixe(ligne, col) {
-                        CHIFFRE_DEPART
-                    } else if self.grille.est_correct(ligne, col, valeur) {
-                        CHIFFRE_JOUEUR
-                    } else {
-                        CHIFFRE_FAUX
-                    };
-                    // Un nombre à deux chiffres a besoin d'une police un peu plus petite
-                    let hauteur = if valeur >= 10 { case * 0.45 } else { case * 0.6 };
-                    peintre.text(
-                        rectangle.center(),
-                        Align2::CENTER_CENTER,
-                        valeur,
-                        FontId::proportional(hauteur),
-                        couleur,
-                    );
-                } else {
-                    // Une case vide montre ses notes en petit, rangées en tableau :
-                    // le chiffre v a toujours la même place dans la case
-                    let notes = self.notes[ligne * nombre + col];
-                    let colonnes = (nombre as f32).sqrt().ceil() as usize;
-                    let lignes_notes = nombre.div_ceil(colonnes);
-                    let (largeur, hauteur) = (case / colonnes as f32, case / lignes_notes as f32);
-                    for note in 1..=nombre {
-                        if notes & (1 << (note - 1)) == 0 {
-                            continue;
-                        }
-                        let (rang, colonne) = ((note - 1) / colonnes, (note - 1) % colonnes);
-                        let centre = Pos2::new(
-                            coin.x + (colonne as f32 + 0.5) * largeur,
-                            coin.y + (rang as f32 + 0.5) * hauteur,
-                        );
-                        // Les notes du chiffre choisi ressortent
-                        let couleur = if chiffre_choisi == Some(note as u8) { CHIFFRE_JOUEUR } else { NOTE };
-                        peintre.text(
-                            centre,
-                            Align2::CENTER_CENTER,
-                            note,
-                            FontId::proportional(largeur.min(hauteur) * 0.8),
-                            couleur,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Quadrillage : les traits qui séparent les blocs sont plus épais.
-        // Les traits verticaux suivent la largeur d'un bloc, les horizontaux sa hauteur.
-        for i in 0..=nombre {
-            let decalage = i as f32 * case;
-            let vertical = if i % bloc_l == 0 {
-                Stroke::new(3.0, TRAIT_EPAIS)
+        let (grille, notes) = (&self.grille, &self.notes);
+        let clic = dessiner_plateau(ui, cote_px, taille, self.selection, |ligne, col| {
+            let valeur = grille.valeur(ligne, col);
+            // Un chiffre du joueur qui n'est pas celui de la solution s'affiche en rouge
+            let couleur = if grille.est_fixe(ligne, col) {
+                CHIFFRE_DEPART
+            } else if grille.est_correct(ligne, col, valeur) {
+                CHIFFRE_JOUEUR
             } else {
-                Stroke::new(1.0, TRAIT_FIN)
+                CHIFFRE_FAUX
             };
-            peintre.line_segment(
-                [
-                    Pos2::new(zone.min.x + decalage, zone.min.y),
-                    Pos2::new(zone.min.x + decalage, zone.max.y),
-                ],
-                vertical,
-            );
-            let horizontal = if i % bloc_h == 0 {
-                Stroke::new(3.0, TRAIT_EPAIS)
-            } else {
-                Stroke::new(1.0, TRAIT_FIN)
-            };
-            peintre.line_segment(
-                [
-                    Pos2::new(zone.min.x, zone.min.y + decalage),
-                    Pos2::new(zone.max.x, zone.min.y + decalage),
-                ],
-                horizontal,
-            );
+            ContenuCase { valeur, couleur, notes: notes[ligne * nombre + col] }
+        });
+        if let Some(case) = clic {
+            // Le chiffre en attente est joué dans l'ancienne case avant de changer de case
+            self.valider_tampon();
+            self.selection = Some(case);
         }
     }
 
@@ -987,6 +882,7 @@ enum Ecran {
     Partie,
     Classement,
     Statistiques,
+    Resolution,
 }
 
 struct Application {
@@ -1009,6 +905,8 @@ struct Application {
     statistiques: Statistiques,
     taille_stats: Taille,
     filtre_stats: Option<Niveau>,
+    // La grille saisie dans l'écran « Résoudre une grille »
+    resolveur: Resolveur,
 }
 
 impl Application {
@@ -1035,6 +933,7 @@ impl Application {
             statistiques: Statistiques::charger(),
             taille_stats: Taille::Neuf,
             filtre_stats: None,
+            resolveur: Resolveur::new(),
         }
     }
 
@@ -1154,6 +1053,10 @@ impl Application {
                     choix = Some(ChoixMenu::Nouvelle(Origine::Fixe));
                 }
                 ui.add_space(8.0);
+                if gros_bouton(ui, "Résoudre une grille") {
+                    choix = Some(ChoixMenu::Resolution);
+                }
+                ui.add_space(8.0);
                 if gros_bouton(ui, "Classement") {
                     choix = Some(ChoixMenu::Classement);
                 }
@@ -1183,6 +1086,7 @@ impl Application {
             Some(ChoixMenu::Nouvelle(origine)) => self.lancer_partie(origine, ui.ctx()),
             Some(ChoixMenu::Classement) => self.ecran = Ecran::Classement,
             Some(ChoixMenu::Statistiques) => self.ecran = Ecran::Statistiques,
+            Some(ChoixMenu::Resolution) => self.ecran = Ecran::Resolution,
             Some(ChoixMenu::Quitter) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             None => {}
         }
@@ -1291,6 +1195,122 @@ impl Application {
         }
     }
 
+    // Lit le clavier dans l'écran de résolution : chiffres, effacement, flèches, et Ctrl+V
+    // qui colle une grille entière
+    fn lire_clavier_resolution(&mut self, ui: &egui::Ui) {
+        let evenements = ui.input(|entree| entree.events.clone());
+        for evenement in evenements {
+            match evenement {
+                egui::Event::Paste(texte) => {
+                    if let Err(erreur) = self.resolveur.coller(&texte) {
+                        self.resolveur.message = erreur;
+                    }
+                }
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if !modifiers.command =>
+                {
+                    if let Some(&(_, chiffre)) = TOUCHES_CHIFFRES.iter().find(|(autre, _)| *autre == key) {
+                        self.resolveur.saisir(chiffre);
+                        continue;
+                    }
+                    match key {
+                        Key::Backspace | Key::Delete => self.resolveur.effacer_la_case(),
+                        Key::ArrowUp => self.resolveur.deplacer(-1, 0),
+                        Key::ArrowDown => self.resolveur.deplacer(1, 0),
+                        Key::ArrowLeft => self.resolveur.deplacer(0, -1),
+                        Key::ArrowRight => self.resolveur.deplacer(0, 1),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // L'écran « Résoudre une grille » : on saisit les chiffres d'une grille, le solveur la remplit
+    fn dessiner_resolution(&mut self, ui: &mut egui::Ui) {
+        self.lire_clavier_resolution(ui);
+
+        if ui.button("Menu").clicked() {
+            self.ecran = Ecran::Menu;
+        }
+        ui.vertical_centered(|ui| ui.heading("Résoudre une grille"));
+        ui.add_space(6.0);
+
+        // La grille est carrée : elle prend la place disponible en laissant de quoi
+        // afficher les commandes en dessous
+        let cote = ui
+            .available_width()
+            .min(ui.available_height() - 215.0)
+            .max(180.0);
+        let conflits = self.resolveur.conflits();
+        let resolveur = &self.resolveur;
+        let clic = ui
+            .vertical_centered(|ui| {
+                dessiner_plateau(ui, cote, resolveur.taille(), resolveur.selection, |ligne, col| {
+                    // Les chiffres saisis sont en noir, ceux du solveur en bleu,
+                    // et ceux qui se contredisent en rouge
+                    let couleur = if conflits[ligne * 9 + col] {
+                        CHIFFRE_FAUX
+                    } else if resolveur.est_saisie(ligne, col) {
+                        CHIFFRE_DEPART
+                    } else {
+                        CHIFFRE_JOUEUR
+                    };
+                    ContenuCase { valeur: resolveur.valeur(ligne, col), couleur, notes: 0 }
+                })
+            })
+            .inner;
+        if let Some(case) = clic {
+            self.resolveur.selection = Some(case);
+        }
+        ui.add_space(8.0);
+
+        let mut chiffre_demande = None;
+        let mut effacer = false;
+        ui.horizontal_wrapped(|ui| {
+            for valeur in 1..=9u8 {
+                let bouton = egui::Button::new(valeur.to_string()).min_size(Vec2::splat(32.0));
+                if ui.add(bouton).clicked() {
+                    chiffre_demande = Some(valeur);
+                }
+            }
+            let bouton = egui::Button::new("Effacer").min_size(Vec2::new(60.0, 32.0));
+            effacer = ui.add(bouton).clicked();
+        });
+        ui.horizontal(|ui| {
+            let resoudre = egui::Button::new(RichText::new("Résoudre").strong()).min_size(Vec2::new(90.0, 32.0));
+            if ui.add(resoudre).clicked() {
+                self.resolveur.resoudre();
+            }
+            if self.resolveur.est_resolue() && ui.button("Modifier la grille").clicked() {
+                self.resolveur.revenir_a_la_saisie();
+            }
+            if ui.button("Tout effacer").clicked() {
+                self.resolveur.tout_effacer();
+            }
+        });
+        if let Some(valeur) = chiffre_demande {
+            self.resolveur.saisir(valeur);
+        }
+        if effacer {
+            self.resolveur.effacer_la_case();
+        }
+
+        ui.add_space(8.0);
+        if self.resolveur.message.is_empty() {
+            ui.label(format!(
+                "{} chiffres saisis. Cliquez sur une case et tapez les chiffres de votre grille \
+                 (0 pour une case vide, Ctrl+V pour coller une grille), puis cliquez sur Résoudre.",
+                self.resolveur.nombre_de_chiffres()
+            ));
+        } else if self.resolveur.est_resolue() {
+            ui.colored_label(VERT, self.resolveur.message.as_str());
+        } else {
+            ui.label(self.resolveur.message.as_str());
+        }
+    }
+
     fn dessiner_statistiques(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
@@ -1360,6 +1380,144 @@ impl Application {
     }
 }
 
+// Ce qu'une case affiche : son chiffre (0 = vide) avec sa couleur, ou ses notes si elle est vide
+struct ContenuCase {
+    valeur: u8,
+    couleur: Color32,
+    // Les notes en bits : le bit (v - 1) vaut 1 si la note v est écrite
+    notes: u16,
+}
+
+// Dessine une grille dans un carré de `cote_px` pixels de côté : le quadrillage, la sélection
+// et le contenu de chaque case, donné par `contenu(ligne, col)`.
+// Renvoie la case sur laquelle on vient de cliquer, s'il y en a une.
+fn dessiner_plateau(
+    ui: &mut egui::Ui,
+    cote_px: f32,
+    taille: Taille,
+    selection: Option<(usize, usize)>,
+    contenu: impl Fn(usize, usize) -> ContenuCase,
+) -> Option<(usize, usize)> {
+    let nombre = taille.cote();
+    let (bloc_h, bloc_l) = (taille.bloc_h(), taille.bloc_l());
+    let (zone, reponse) = ui.allocate_exact_size(Vec2::splat(cote_px), Sense::click());
+    let case = cote_px / nombre as f32;
+
+    let mut clic = None;
+    if reponse.clicked() {
+        if let Some(souris) = reponse.interact_pointer_pos() {
+            let col = (((souris.x - zone.min.x) / case) as usize).min(nombre - 1);
+            let ligne = (((souris.y - zone.min.y) / case) as usize).min(nombre - 1);
+            clic = Some((ligne, col));
+        }
+    }
+    // La case cliquée est mise en valeur tout de suite
+    let selection = clic.or(selection);
+
+    let peintre = ui.painter_at(zone);
+    peintre.rect_filled(zone, 0.0, FOND);
+
+    // Les cases qui contiennent le même chiffre que la case choisie sont mises en valeur
+    let chiffre_choisi = selection
+        .map(|(ligne, col)| contenu(ligne, col).valeur)
+        .filter(|&valeur| valeur != 0);
+
+    for ligne in 0..nombre {
+        for col in 0..nombre {
+            let coin = Pos2::new(
+                zone.min.x + col as f32 * case,
+                zone.min.y + ligne as f32 * case,
+            );
+            let rectangle = Rect::from_min_size(coin, Vec2::splat(case));
+            let ContenuCase { valeur, couleur, notes } = contenu(ligne, col);
+
+            let fond = match selection {
+                Some(choisie) if choisie == (ligne, col) => Some(CASE_SELECTIONNEE),
+                _ if valeur != 0 && Some(valeur) == chiffre_choisi => Some(MEME_CHIFFRE),
+                Some((l, c))
+                    if l == ligne
+                        || c == col
+                        || (l / bloc_h == ligne / bloc_h && c / bloc_l == col / bloc_l) =>
+                {
+                    Some(LIGNE_COLONNE_BLOC)
+                }
+                _ => None,
+            };
+            if let Some(couleur) = fond {
+                peintre.rect_filled(rectangle, 0.0, couleur);
+            }
+
+            if valeur != 0 {
+                // Un nombre à deux chiffres a besoin d'une police un peu plus petite
+                let hauteur = if valeur >= 10 { case * 0.45 } else { case * 0.6 };
+                peintre.text(
+                    rectangle.center(),
+                    Align2::CENTER_CENTER,
+                    valeur,
+                    FontId::proportional(hauteur),
+                    couleur,
+                );
+            } else {
+                // Une case vide montre ses notes en petit, rangées en tableau :
+                // le chiffre v a toujours la même place dans la case
+                let colonnes = (nombre as f32).sqrt().ceil() as usize;
+                let lignes_notes = nombre.div_ceil(colonnes);
+                let (largeur, hauteur) = (case / colonnes as f32, case / lignes_notes as f32);
+                for note in 1..=nombre {
+                    if notes & (1 << (note - 1)) == 0 {
+                        continue;
+                    }
+                    let (rang, colonne) = ((note - 1) / colonnes, (note - 1) % colonnes);
+                    let centre = Pos2::new(
+                        coin.x + (colonne as f32 + 0.5) * largeur,
+                        coin.y + (rang as f32 + 0.5) * hauteur,
+                    );
+                    // Les notes du chiffre choisi ressortent
+                    let couleur = if chiffre_choisi == Some(note as u8) { CHIFFRE_JOUEUR } else { NOTE };
+                    peintre.text(
+                        centre,
+                        Align2::CENTER_CENTER,
+                        note,
+                        FontId::proportional(largeur.min(hauteur) * 0.8),
+                        couleur,
+                    );
+                }
+            }
+        }
+    }
+
+    // Quadrillage : les traits qui séparent les blocs sont plus épais.
+    // Les traits verticaux suivent la largeur d'un bloc, les horizontaux sa hauteur.
+    for i in 0..=nombre {
+        let decalage = i as f32 * case;
+        let vertical = if i % bloc_l == 0 {
+            Stroke::new(3.0, TRAIT_EPAIS)
+        } else {
+            Stroke::new(1.0, TRAIT_FIN)
+        };
+        peintre.line_segment(
+            [
+                Pos2::new(zone.min.x + decalage, zone.min.y),
+                Pos2::new(zone.min.x + decalage, zone.max.y),
+            ],
+            vertical,
+        );
+        let horizontal = if i % bloc_h == 0 {
+            Stroke::new(3.0, TRAIT_EPAIS)
+        } else {
+            Stroke::new(1.0, TRAIT_FIN)
+        };
+        peintre.line_segment(
+            [
+                Pos2::new(zone.min.x, zone.min.y + decalage),
+                Pos2::new(zone.max.x, zone.min.y + decalage),
+            ],
+            horizontal,
+        );
+    }
+    clic
+}
+
 // Un grand bouton pour le menu
 fn gros_bouton(ui: &mut egui::Ui, texte: &str) -> bool {
     ui.add(egui::Button::new(texte).min_size(Vec2::new(240.0, 40.0)))
@@ -1375,6 +1533,7 @@ impl eframe::App for Application {
             Ecran::Partie => self.dessiner_partie(ui),
             Ecran::Classement => self.dessiner_classement(ui),
             Ecran::Statistiques => self.dessiner_statistiques(ui),
+            Ecran::Resolution => self.dessiner_resolution(ui),
         });
     }
 
@@ -2142,6 +2301,7 @@ mod tests {
             statistiques: Statistiques::depuis_fichier(chemin_temporaire()),
             taille_stats: Taille::Neuf,
             filtre_stats: None,
+            resolveur: Resolveur::new(),
         }
     }
 

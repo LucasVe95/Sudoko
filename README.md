@@ -21,6 +21,7 @@ Déjà présent :
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
 - Statistiques par taille et par niveau : victoires, meilleur temps, séries
+- Résolution d'une grille de journal saisie ou collée, avec détection des erreurs de saisie et des grilles à plusieurs solutions
 - Notes au crayon dans les cases vides, avec un remplissage automatique des chiffres permis
 - Annuler et refaire les coups (`Ctrl+Z`, `Ctrl+Y`)
 - Sauvegarde automatique de la partie en cours : on ferme le jeu et on reprend plus tard
@@ -101,6 +102,16 @@ Les statistiques sont dans un fichier texte à côté du classement, que l'on pe
 
 - Windows : `%APPDATA%\Sudoko\statistiques.txt`
 - Linux et macOS : `~/.local/share/Sudoko/statistiques.txt`
+
+### Résoudre une grille
+
+Le bouton `Résoudre une grille` du menu ouvre un écran où l'on recopie une grille de journal (9×9) pour que le programme la résolve.
+
+- Cliquez sur une case et tapez les chiffres de 1 à 9 : la sélection avance d'une case à chaque chiffre, pour saisir toute la grille d'une traite. `0` laisse une case vide et passe à la suivante. `Suppr` ou `Retour arrière` vident la case sans bouger, les flèches déplacent la sélection, et les boutons `1` à `9` et `Effacer` font la même chose à la souris.
+- `Ctrl+V` colle une grille entière : 81 cases avec des chiffres de 1 à 9 et `0` ou `.` pour les cases vides. Les espaces, les retours à la ligne et les traits de dessin (`|`, `+`, `-`) sont ignorés, ce qui permet de copier une grille depuis un site.
+- Deux chiffres identiques dans une même ligne, colonne ou bloc s'affichent en rouge, et la résolution est refusée tant qu'ils sont là (c'est souvent une faute de frappe).
+- `Résoudre` remplit les cases vides : les chiffres saisis restent en noir, ceux trouvés par le programme sont en bleu. Un message indique si la solution est unique, s'il y en a plusieurs (le programme en montre alors une, et rappelle qu'une grille a besoin d'au moins 17 chiffres pour avoir une solution unique) ou s'il n'y en a aucune. La recherche s'arrête au bout d'environ une seconde si elle est trop longue.
+- `Modifier la grille` retire la solution pour corriger la saisie, et `Tout effacer` repart d'une grille vide.
 
 ### Au terminal
 
@@ -197,6 +208,7 @@ Sudoko/
 │   ├── sauvegarde.rs # Sauvegarde et reprise de la partie en cours (fichier texte)
 │   ├── statistiques.rs # Parties terminées enregistrées dans un fichier, et calcul des statistiques
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
+│   ├── resolveur.rs # Saisie d'une grille 9×9 et sa résolution (écran « Résoudre une grille »)
 │   └── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
 ├── LICENSE
 └── README.md

@@ -8,7 +8,7 @@ Liste des fonctionnalités envisagées pour Sudoko, avec ce que chacune apporte 
 | 2 | **Annuler et refaire** | On revient en arrière après une erreur, avec `Ctrl+Z`. | Faible | Fait |
 | 3 | **Notes au crayon** | On inscrit les chiffres possibles dans une case. C'est presque indispensable en 16×16. | Moyen | Fait |
 | 4 | **Statistiques** | Parties jouées, taux de victoire, meilleur temps par taille et niveau. | Faible | Fait |
-| 5 | **« Résoudre ma grille »** | On saisit une grille de journal dans la fenêtre et le solveur la résout. Le chargement et le solveur existent déjà. | Faible à moyen | À faire |
+| 5 | **« Résoudre ma grille »** | On saisit une grille de journal dans la fenêtre et le solveur la résout. Le chargement et le solveur existent déjà. | Faible à moyen | Fait |
 | 6 | **Compilation automatique sur GitHub** | Un exécutable et les tests générés à chaque version, sans attendre 8 minutes en local. | Faible | Fait |
 | 7 | **Vraie difficulté** | La difficulté serait mesurée par les techniques nécessaires (case forcée, etc.) plutôt que par le nombre de cases vides. Un indice pourrait alors expliquer la technique. | Élevé | À faire |
 | 8 | **Réglages** | Thème sombre, mode pour daltoniens, sons. | Faible à moyen | À faire |

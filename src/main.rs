@@ -4,6 +4,7 @@ mod classement;
 mod grille;
 mod gui;
 mod jeu;
+mod resolveur;
 mod sauvegarde;
 mod solveur;
 mod statistiques;

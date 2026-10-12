@@ -210,6 +210,57 @@ impl Solveur {
     }
 }
 
+// Ce que le solveur conclut sur une grille donnée
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    // Aucune solution : les chiffres déjà placés mènent à une impasse
+    Aucune,
+    // Une seule solution, prouvée
+    Unique(Vec<u8>),
+    // Au moins deux solutions : on donne la première trouvée
+    Plusieurs(Vec<u8>),
+    // Une solution trouvée, mais la recherche d'une seconde a été trop longue pour conclure
+    NonVerifiee(Vec<u8>),
+    // La recherche a été trop longue : on ne sait pas
+    TropLong,
+}
+
+// Le nombre d'étapes qu'on accorde à la résolution d'une grille saisie (à peu près une seconde
+// au pire). Une grille de journal en demande quelques centaines.
+const BUDGET_ANALYSE: u64 = 1_000_000;
+
+// Résout une grille saisie par l'utilisateur et dit si sa solution est unique.
+// Renvoie None si la grille contient déjà un doublon ou un chiffre hors limites.
+pub fn analyser(cote: usize, bloc_h: usize, bloc_l: usize, cases: &[u8]) -> Option<Verdict> {
+    analyser_avec_budget(cote, bloc_h, bloc_l, cases, BUDGET_ANALYSE)
+}
+
+fn analyser_avec_budget(
+    cote: usize,
+    bloc_h: usize,
+    bloc_l: usize,
+    cases: &[u8],
+    budget: u64,
+) -> Option<Verdict> {
+    let mut solveur = Solveur::new(cote, bloc_h, bloc_l, cases)?.avec_budget(budget);
+    // Les chiffres sont essayés dans l'ordre croissant : on ne les mélange pas
+    if !solveur.resoudre(&mut |_| {}) {
+        return Some(if solveur.a_abandonne() { Verdict::TropLong } else { Verdict::Aucune });
+    }
+    let solution = solveur.cases().to_vec();
+
+    // Y a-t-il une seconde solution ?
+    let mut solveur = Solveur::new(cote, bloc_h, bloc_l, cases)?.avec_budget(budget);
+    let nombre = solveur.compter(2);
+    Some(if solveur.a_abandonne() && nombre < 2 {
+        Verdict::NonVerifiee(solution)
+    } else if nombre >= 2 {
+        Verdict::Plusieurs(solution)
+    } else {
+        Verdict::Unique(solution)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +389,95 @@ mod tests {
         let mut solveur = Solveur::new(4, 2, 2, &vide).unwrap();
         assert_eq!(solveur.compter(1000), 288);
         assert!(!solveur.a_abandonne());
+    }
+
+    // Les cases de la grille d'entraînement (une grille de journal à solution unique)
+    fn grille_de_journal() -> Vec<u8> {
+        crate::grille::DEPART
+            .chars()
+            .filter_map(|c| c.to_digit(10))
+            .map(|chiffre| chiffre as u8)
+            .collect()
+    }
+
+    #[test]
+    fn test_analyser_une_grille_a_solution_unique() {
+        let Some(Verdict::Unique(solution)) = analyser(9, 3, 3, &grille_de_journal()) else {
+            panic!("la grille d'entraînement a une solution unique");
+        };
+        assert!(est_complete_et_valide(9, 3, 3, &solution));
+        assert_eq!(&solution[..9], &[5, 3, 4, 6, 7, 8, 9, 1, 2]);
+        // Les chiffres de départ sont conservés
+        for (depart, trouve) in grille_de_journal().iter().zip(&solution) {
+            assert!(*depart == 0 || depart == trouve);
+        }
+    }
+
+    #[test]
+    fn test_analyser_une_grille_a_plusieurs_solutions() {
+        let Some(Verdict::Plusieurs(solution)) = analyser(9, 3, 3, &vec![0u8; 81]) else {
+            panic!("une grille vide a plusieurs solutions");
+        };
+        assert!(est_complete_et_valide(9, 3, 3, &solution));
+
+        // Retirer des chiffres à la grille de journal peut rendre la solution ambiguë
+        let mut cases = grille_de_journal();
+        for case in cases.iter_mut().take(40) {
+            *case = 0;
+        }
+        assert!(matches!(analyser(9, 3, 3, &cases), Some(Verdict::Plusieurs(_))));
+    }
+
+    #[test]
+    fn test_analyser_une_grille_sans_solution() {
+        // La première ligne contient 1 à 8 : sa dernière case devrait être 9,
+        // mais sa colonne a déjà un 9
+        let mut cases = vec![0u8; 81];
+        for (col, valeur) in (1..=8).enumerate() {
+            cases[col] = valeur;
+        }
+        cases[9 + 8] = 9;
+        assert_eq!(analyser(9, 3, 3, &cases), Some(Verdict::Aucune));
+    }
+
+    #[test]
+    fn test_analyser_refuse_un_doublon_ou_un_chiffre_hors_limites() {
+        let mut cases = vec![0u8; 81];
+        cases[0] = 5;
+        cases[1] = 5;
+        assert_eq!(analyser(9, 3, 3, &cases), None);
+        let mut cases = vec![0u8; 16];
+        cases[0] = 5;
+        assert_eq!(analyser(4, 2, 2, &cases), None);
+    }
+
+    #[test]
+    fn test_analyser_trop_long() {
+        let vide = vec![0u8; 81];
+        assert_eq!(analyser_avec_budget(9, 3, 3, &vide, 1), Some(Verdict::TropLong));
+    }
+
+    #[test]
+    fn test_analyser_solution_trouvee_mais_unicite_non_verifiee() {
+        // Pour un budget qui suffit juste à trouver une solution, la recherche d'une seconde
+        // n'a plus assez d'étapes
+        let vide = vec![0u8; 81];
+        let non_verifiee = (80..5000).find_map(|budget| {
+            match analyser_avec_budget(9, 3, 3, &vide, budget) {
+                Some(Verdict::NonVerifiee(solution)) => Some(solution),
+                _ => None,
+            }
+        });
+        let solution = non_verifiee.expect("un budget donne une solution sans preuve d'unicité");
+        assert!(est_complete_et_valide(9, 3, 3, &solution));
+    }
+
+    #[test]
+    fn test_analyser_une_grille_4x4() {
+        let mut cases = vec![0u8; 16];
+        cases[..4].copy_from_slice(&[1, 2, 3, 4]);
+        // Une première ligne donnée laisse plusieurs grilles possibles
+        assert!(matches!(analyser(4, 2, 2, &cases), Some(Verdict::Plusieurs(_))));
     }
 
     #[test]
