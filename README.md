@@ -163,6 +163,20 @@ Sous Windows, il faut les composants Visual C++ (`VCRUNTIME140.dll`, présents s
 
 La compilation en mode `release` est longue (7 minutes environ la première fois) et consomme beaucoup de mémoire : `cargo build --release -j 2` limite la charge.
 
+### Compilation automatique sur GitHub
+
+Le fichier [.github/workflows/ci.yml](.github/workflows/ci.yml) fait travailler GitHub à votre place, sur une machine Windows :
+
+- À chaque envoi sur `main` et à chaque demande de fusion, il lance les tests puis compile l'exécutable. L'exécutable est téléchargeable dans l'onglet *Actions* du dépôt, sur la page de l'exécution (artefact `Sudoko-windows`, gardé quelques semaines).
+- Pour publier une version, créez une étiquette qui commence par `v` et envoyez-la :
+
+  ```bash
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+
+  GitHub teste, compile et crée la *release* `v1.0.0` avec `Sudoko.exe` en pièce jointe, accessible depuis l'onglet *Releases*.
+
 ## Tests
 
 ```bash
@@ -173,6 +187,7 @@ cargo test
 
 ```text
 Sudoko/
+├── .github/workflows/ci.yml # Tests et exécutable compilés automatiquement par GitHub
 ├── Cargo.toml    # Configuration du projet et dépendances
 ├── src/
 │   ├── main.rs   # Point d'entrée : choix de la grille et de l'interface selon les arguments

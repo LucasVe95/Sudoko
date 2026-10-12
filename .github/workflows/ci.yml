@@ -1,0 +1,44 @@
+name: CI
+
+# Les tests et l'exécutable sont refaits à chaque envoi sur main et à chaque demande de fusion.
+# Un envoi d'étiquette comme `v1.0.0` publie en plus l'exécutable dans une release GitHub.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    # Le droit d'écrire sert uniquement à créer la release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Le projet utilise l'édition 2024 : il lui faut une version récente de Rust
+      - name: Mettre Rust à jour
+        run: rustup update stable
+
+      # Garde les dépendances compilées d'une fois sur l'autre (la 1re compilation est longue)
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Exécutable
+        run: cargo build --release --locked
+
+      - name: Garder l'exécutable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sudoko-windows
+          path: target/release/Sudoko.exe
+
+      - name: Publier la release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" target/release/Sudoko.exe --title "$GITHUB_REF_NAME" --generate-notes
