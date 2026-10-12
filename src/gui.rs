@@ -5,6 +5,7 @@ use crate::classement::{
 };
 use crate::grille::{Grille, Indice, Niveau, Origine, Taille};
 use crate::reglages::{Reglages, Theme};
+use crate::regles::{Regles, Variante};
 use crate::resolveur::Resolveur;
 use crate::sauvegarde::{PartieSauvee, Sauvegarde};
 use crate::sons::{self, Son};
@@ -13,6 +14,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextEdit, Vec2,
 };
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,6 +59,8 @@ struct Palette {
     chiffre_joueur: Color32,
     chiffre_faux: Color32,
     note: Color32,
+    // Les cases des zones de la variante (diagonales, fenêtres)
+    zone_speciale: Color32,
     trait_fin: Color32,
     trait_epais: Color32,
     vert: Color32,
@@ -75,6 +79,7 @@ impl Palette {
                 chiffre_joueur: Color32::from_rgb(110, 170, 255),
                 chiffre_faux: Color32::from_rgb(255, 100, 100),
                 note: Color32::from_rgb(150, 150, 170),
+                zone_speciale: Color32::from_rgb(70, 60, 40),
                 trait_fin: Color32::from_rgb(90, 90, 95),
                 trait_epais: Color32::from_rgb(210, 210, 215),
                 vert: Color32::from_rgb(90, 200, 120),
@@ -90,6 +95,7 @@ impl Palette {
                 chiffre_joueur: Color32::from_rgb(30, 90, 200),
                 chiffre_faux: Color32::from_rgb(210, 40, 40),
                 note: Color32::from_rgb(110, 110, 130),
+                zone_speciale: Color32::from_rgb(255, 240, 205),
                 trait_fin: Color32::from_rgb(170, 170, 170),
                 trait_epais: Color32::from_rgb(25, 25, 25),
                 vert: Color32::from_rgb(40, 160, 70),
@@ -340,7 +346,7 @@ impl Partie {
     // La ligne des statistiques pour cette partie. Rien tant qu'elle n'est pas finie, ni pour la
     // grille d'entraînement.
     fn vers_statistique(&self) -> Option<PartieJouee> {
-        let (fin, Origine::Niveau(niveau, taille)) = (self.fin?, self.origine) else {
+        let (fin, Origine::Niveau(niveau, taille, variante)) = (self.fin?, self.origine) else {
             return None;
         };
         let resultat = match fin {
@@ -352,6 +358,7 @@ impl Partie {
             horodatage: maintenant(),
             niveau,
             taille,
+            variante,
             resultat,
             duree_secondes: self.duree().as_secs(),
             erreurs: self.erreurs,
@@ -400,7 +407,7 @@ impl Partie {
                 Fin::Abandon => {}
             }
             self.arreter_chrono();
-            if let (Fin::Victoire, Origine::Niveau(niveau, taille)) = (fin, self.origine) {
+            if let (Fin::Victoire, Origine::Niveau(niveau, taille, _)) = (fin, self.origine) {
                 self.score = Some(calculer_score(
                     niveau,
                     taille,
@@ -415,7 +422,7 @@ impl Partie {
     // Inscrit le score au classement, avec le nom tapé. Sans effet s'il n'y a pas de score
     // ou s'il est déjà enregistré.
     fn enregistrer_score(&mut self, classement: &mut Classement) {
-        let (Some(score), Origine::Niveau(niveau, taille)) = (self.score, self.origine) else {
+        let (Some(score), Origine::Niveau(niveau, taille, variante)) = (self.score, self.origine) else {
             return;
         };
         if self.rang.is_some() {
@@ -431,6 +438,7 @@ impl Partie {
             nom: nom.clone(),
             niveau,
             taille,
+            variante,
             score,
             duree_secondes: self.duree().as_secs(),
             horodatage: maintenant(),
@@ -781,10 +789,10 @@ impl Partie {
     // Dessine la grille dans un carré de `cote_px` pixels de côté et sélectionne la case
     // sur laquelle on clique
     fn dessiner_grille(&mut self, ui: &mut egui::Ui, cote_px: f32, reglages: &Reglages) {
-        let taille = self.grille.taille();
-        let nombre = taille.cote();
+        let nombre = self.grille.taille().cote();
         let (grille, notes) = (&self.grille, &self.notes);
-        let clic = dessiner_plateau(ui, cote_px, taille, self.selection, reglages, |ligne, col| {
+        let regles = Arc::clone(grille.regles());
+        let clic = dessiner_plateau(ui, cote_px, &regles, self.selection, reglages, |ligne, col| {
             let valeur = grille.valeur(ligne, col);
             // Un chiffre du joueur qui n'est pas celui de la solution est signalé comme faux
             let genre = if grille.est_fixe(ligne, col) {
@@ -954,7 +962,13 @@ impl Partie {
                 ui.label(format!("Erreurs {}/{}", self.erreurs, MAX_ERREURS));
             });
         });
-        ui.vertical_centered(|ui| ui.heading(self.grille.nom.as_str()));
+        ui.vertical_centered(|ui| {
+            ui.heading(self.grille.nom.as_str());
+            // Une variante a une règle en plus : on la rappelle sous le titre
+            if self.grille.variante() != Variante::Classique {
+                ui.small(self.grille.variante().regle());
+            }
+        });
         ui.add_space(6.0);
 
         // La grille est carrée : elle prend la place disponible en laissant de quoi
@@ -1006,10 +1020,12 @@ struct Application {
     generation: Option<(Receiver<Grille>, Origine)>,
     erreur: String,
     classement: Classement,
-    // La taille de grille choisie dans le menu pour les nouvelles parties
+    // La taille de grille et la variante choisies dans le menu pour les nouvelles parties
     taille_choisie: Taille,
-    // La taille et le niveau affichés dans le classement (niveau None = tous)
+    variante_choisie: Variante,
+    // La taille, la variante et le niveau affichés dans le classement (niveau None = tous)
     taille_classement: Taille,
+    variante_classement: Variante,
     filtre: Option<Niveau>,
     // Le dernier nom utilisé : il est proposé d'office pour les parties suivantes
     dernier_nom: String,
@@ -1018,6 +1034,7 @@ struct Application {
     // Toutes les parties terminées, et la taille et le niveau affichés dans l'écran des statistiques
     statistiques: Statistiques,
     taille_stats: Taille,
+    variante_stats: Variante,
     filtre_stats: Option<Niveau>,
     // La grille saisie dans l'écran « Résoudre une grille »
     resolveur: Resolveur,
@@ -1042,12 +1059,15 @@ impl Application {
             erreur: String::new(),
             classement,
             taille_choisie: Taille::Neuf,
+            variante_choisie: Variante::Classique,
             taille_classement: Taille::Neuf,
+            variante_classement: Variante::Classique,
             filtre: None,
             dernier_nom,
             sauvegarde,
             statistiques: Statistiques::charger(),
             taille_stats: Taille::Neuf,
+            variante_stats: Variante::Classique,
             filtre_stats: None,
             resolveur: Resolveur::new(),
             reglages: Reglages::charger(),
@@ -1066,12 +1086,12 @@ impl Application {
                 Ok(grille) => self.demarrer(grille, origine),
                 Err(erreur) => self.erreur = erreur,
             },
-            Origine::Niveau(niveau, taille) => {
+            Origine::Niveau(niveau, taille, variante) => {
                 let (envoi, reception) = mpsc::channel();
                 let contexte = contexte.clone();
                 thread::spawn(move || {
                     // Si la fenêtre est déjà fermée, personne ne reçoit : l'erreur d'envoi est sans importance
-                    let _ = envoi.send(Grille::generer_niveau(niveau, taille));
+                    let _ = envoi.send(Grille::generer_niveau(niveau, taille, variante));
                     // Réveille la fenêtre pour qu'elle affiche la grille dès qu'elle est prête
                     contexte.request_repaint();
                 });
@@ -1172,9 +1192,31 @@ impl Application {
                                 let largeur_colonne = colonne.available_width();
                                 if colonne.add_sized([largeur_colonne, 32.0], bouton).clicked() {
                                     self.taille_choisie = taille;
+                                    // Une variante qui n'existe pas dans cette taille est abandonnée
+                                    if !self.variante_choisie.accepte(taille) {
+                                        self.variante_choisie = Variante::Classique;
+                                    }
                                 }
                             }
                         });
+                        ui.add_space(8.0);
+
+                        ui.label(RichText::new("Variante").weak());
+                        ui.columns(Variante::TOUTES.len(), |colonnes| {
+                            for (colonne, variante) in colonnes.iter_mut().zip(Variante::TOUTES) {
+                                let choisie = self.variante_choisie == variante;
+                                let accepte = variante.accepte(self.taille_choisie);
+                                let bouton = egui::Button::selectable(choisie, variante.libelle());
+                                let largeur_colonne = colonne.available_width();
+                                let reponse = colonne
+                                    .add_enabled_ui(accepte, |ui| ui.add_sized([largeur_colonne, 32.0], bouton))
+                                    .inner;
+                                if reponse.clicked() {
+                                    self.variante_choisie = variante;
+                                }
+                            }
+                        });
+                        ui.small(self.variante_choisie.regle());
                         ui.add_space(8.0);
 
                         ui.label(RichText::new("Niveau").weak());
@@ -1183,7 +1225,11 @@ impl Application {
                                 let largeur_colonne = colonne.available_width();
                                 let bouton = egui::Button::new(RichText::new(niveau.libelle()).size(16.0));
                                 if colonne.add_sized([largeur_colonne, 44.0], bouton).clicked() {
-                                    choix = Some(ChoixMenu::Nouvelle(Origine::Niveau(niveau, self.taille_choisie)));
+                                    choix = Some(ChoixMenu::Nouvelle(Origine::Niveau(
+                                        niveau,
+                                        self.taille_choisie,
+                                        self.variante_choisie,
+                                    )));
                                 }
                             }
                         });
@@ -1273,6 +1319,7 @@ impl Application {
                 partie.arreter_chrono();
                 // On ouvre le classement de la taille qu'on vient de jouer
                 self.taille_classement = partie.grille.taille();
+                self.variante_classement = partie.grille.variante();
                 self.ecran = Ecran::Classement;
             }
             Some(Action::Rejouer) => {
@@ -1297,15 +1344,25 @@ impl Application {
     fn dessiner_classement(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
-            ui.heading(format!("Classement {}", self.taille_classement.libelle()));
+            ui.heading(format!(
+                "Classement {}",
+                libelle_format(self.taille_classement, self.variante_classement)
+            ));
         });
         ui.add_space(8.0);
 
-        // Les scores de tailles différentes ne se comparent pas : chaque taille a son classement
+        // Les scores de tailles ou de variantes différentes ne se comparent pas :
+        // chaque taille et chaque variante a son classement
         ui.horizontal_wrapped(|ui| {
             ui.label("Taille :");
             for taille in Taille::TOUTES {
                 ui.selectable_value(&mut self.taille_classement, taille, taille.libelle());
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Variante :");
+            for variante in Variante::TOUTES {
+                ui.selectable_value(&mut self.variante_classement, variante, variante.libelle());
             }
         });
         ui.horizontal(|ui| {
@@ -1319,11 +1376,11 @@ impl Application {
 
         let meilleurs = self
             .classement
-            .meilleurs(self.taille_classement, self.filtre, LIGNES_CLASSEMENT);
+            .meilleurs(self.taille_classement, self.variante_classement, self.filtre, LIGNES_CLASSEMENT);
         if meilleurs.is_empty() {
             ui.label(format!(
                 "Aucun score en {} pour l'instant : gagnez une partie !",
-                self.taille_classement.libelle()
+                libelle_format(self.taille_classement, self.variante_classement)
             ));
         } else {
             egui::Grid::new("tableau_classement")
@@ -1405,8 +1462,8 @@ impl Application {
         let (resolveur, reglages) = (&self.resolveur, &self.reglages);
         let clic = ui
             .vertical_centered(|ui| {
-                let (taille, selection) = (resolveur.taille(), resolveur.selection);
-                dessiner_plateau(ui, cote, taille, selection, reglages, |ligne, col| {
+                let selection = resolveur.selection;
+                dessiner_plateau(ui, cote, resolveur.regles(), selection, reglages, |ligne, col| {
                     // Les chiffres saisis sont comme ceux d'une grille de départ, ceux du solveur
                     // comme ceux du joueur, et ceux qui se contredisent sont signalés comme faux
                     let genre = if conflits[ligne * 9 + col] {
@@ -1563,7 +1620,10 @@ impl Application {
     fn dessiner_statistiques(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
-            ui.heading(format!("Statistiques {}", self.taille_stats.libelle()));
+            ui.heading(format!(
+                "Statistiques {}",
+                libelle_format(self.taille_stats, self.variante_stats)
+            ));
         });
         ui.add_space(8.0);
 
@@ -1571,6 +1631,12 @@ impl Application {
             ui.label("Taille :");
             for taille in Taille::TOUTES {
                 ui.selectable_value(&mut self.taille_stats, taille, taille.libelle());
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Variante :");
+            for variante in Variante::TOUTES {
+                ui.selectable_value(&mut self.variante_stats, variante, variante.libelle());
             }
         });
         ui.horizontal(|ui| {
@@ -1582,11 +1648,13 @@ impl Application {
         });
         ui.add_space(8.0);
 
-        let resume = self.statistiques.resume(self.taille_stats, self.filtre_stats);
+        let resume = self
+            .statistiques
+            .resume(self.taille_stats, self.variante_stats, self.filtre_stats);
         if resume.jouees == 0 {
             ui.label(format!(
                 "Aucune partie terminée en {} pour l'instant.",
-                self.taille_stats.libelle()
+                libelle_format(self.taille_stats, self.variante_stats)
             ));
         } else {
             let temps = |secondes: Option<u64>| {
@@ -1629,6 +1697,21 @@ impl Application {
     }
 }
 
+// La couleur à mi-chemin entre deux couleurs
+fn moyenne(a: Color32, b: Color32) -> Color32 {
+    let milieu = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+    Color32::from_rgb(milieu(a.r(), b.r()), milieu(a.g(), b.g()), milieu(a.b(), b.b()))
+}
+
+// « 9×9 » pour une grille classique, « 9×9 diagonale » pour une variante
+fn libelle_format(taille: Taille, variante: Variante) -> String {
+    if variante == Variante::Classique {
+        taille.libelle().to_string()
+    } else {
+        format!("{} {}", taille.libelle(), variante.libelle().to_lowercase())
+    }
+}
+
 // Ce qu'une case affiche : son chiffre (0 = vide) avec sa couleur, ou ses notes si elle est vide
 struct ContenuCase {
     valeur: u8,
@@ -1643,14 +1726,13 @@ struct ContenuCase {
 fn dessiner_plateau(
     ui: &mut egui::Ui,
     cote_px: f32,
-    taille: Taille,
+    regles: &Regles,
     selection: Option<(usize, usize)>,
     reglages: &Reglages,
     contenu: impl Fn(usize, usize) -> ContenuCase,
 ) -> Option<(usize, usize)> {
     let palette = Palette::pour(ui.visuals().dark_mode, reglages.daltonien);
-    let nombre = taille.cote();
-    let (bloc_h, bloc_l) = (taille.bloc_h(), taille.bloc_l());
+    let nombre = regles.cote();
     let (zone, reponse) = ui.allocate_exact_size(Vec2::splat(cote_px), Sense::click());
     let case = cote_px / nombre as f32;
 
@@ -1682,18 +1764,27 @@ fn dessiner_plateau(
             let rectangle = Rect::from_min_size(coin, Vec2::splat(case));
             let ContenuCase { valeur, genre, notes } = contenu(ligne, col);
 
+            // Les cases qui ne peuvent pas contenir le même chiffre que la case choisie : sa ligne,
+            // sa colonne, son bloc, et selon la variante une diagonale, une fenêtre, des sauts de cavalier
+            let indice = ligne * nombre + col;
             let fond = match selection {
                 Some(choisie) if choisie == (ligne, col) => Some(palette.case_selectionnee),
                 _ if valeur != 0 && Some(valeur) == chiffre_choisi => Some(palette.meme_chiffre),
                 Some((l, c))
                     if reglages.surligner_zone
-                        && (l == ligne
-                            || c == col
-                            || (l / bloc_h == ligne / bloc_h && c / bloc_l == col / bloc_l)) =>
+                        && regles.voisines[l * nombre + c].binary_search(&indice).is_ok() =>
                 {
                     Some(palette.ligne_colonne_bloc)
                 }
                 _ => None,
+            };
+            // Les zones de la variante restent teintées, même sous une mise en valeur
+            let fond = match (fond, regles.est_zone_speciale(indice)) {
+                (None, true) => Some(palette.zone_speciale),
+                (Some(couleur), true) if Some(couleur) != Some(palette.case_selectionnee) => {
+                    Some(moyenne(couleur, palette.zone_speciale))
+                }
+                (fond, _) => fond,
             };
             if let Some(couleur) = fond {
                 peintre.rect_filled(rectangle, 0.0, couleur);
@@ -1751,34 +1842,52 @@ fn dessiner_plateau(
         }
     }
 
-    // Quadrillage : les traits qui séparent les blocs sont plus épais.
-    // Les traits verticaux suivent la largeur d'un bloc, les horizontaux sa hauteur.
+    // Quadrillage : d'abord les traits fins, puis par-dessus les traits épais qui entourent les
+    // blocs (on les trace partout où deux cases voisines ne sont pas dans le même bloc)
     for i in 0..=nombre {
         let decalage = i as f32 * case;
-        let vertical = if i % bloc_l == 0 {
-            Stroke::new(3.0, palette.trait_epais)
-        } else {
-            Stroke::new(1.0, palette.trait_fin)
-        };
         peintre.line_segment(
             [
                 Pos2::new(zone.min.x + decalage, zone.min.y),
                 Pos2::new(zone.min.x + decalage, zone.max.y),
             ],
-            vertical,
+            Stroke::new(1.0, palette.trait_fin),
         );
-        let horizontal = if i % bloc_h == 0 {
-            Stroke::new(3.0, palette.trait_epais)
-        } else {
-            Stroke::new(1.0, palette.trait_fin)
-        };
         peintre.line_segment(
             [
                 Pos2::new(zone.min.x, zone.min.y + decalage),
                 Pos2::new(zone.max.x, zone.min.y + decalage),
             ],
-            horizontal,
+            Stroke::new(1.0, palette.trait_fin),
         );
+    }
+    let epais = Stroke::new(3.0, palette.trait_epais);
+    // Chaque trait dépasse d'un peu à ses deux bouts, pour que les coins soient pleins
+    let rallonge = epais.width / 2.0;
+    for ligne in 0..nombre {
+        for col in 0..nombre {
+            let indice = ligne * nombre + col;
+            let bloc = regles.bloc_de[indice];
+            let (x, y) = (zone.min.x + col as f32 * case, zone.min.y + ligne as f32 * case);
+            let horizontal = |y: f32| {
+                [Pos2::new(x - rallonge, y), Pos2::new(x + case + rallonge, y)]
+            };
+            let vertical = |x: f32| {
+                [Pos2::new(x, y - rallonge), Pos2::new(x, y + case + rallonge)]
+            };
+            if ligne == 0 || regles.bloc_de[indice - nombre] != bloc {
+                peintre.line_segment(horizontal(y), epais);
+            }
+            if col == 0 || regles.bloc_de[indice - 1] != bloc {
+                peintre.line_segment(vertical(x), epais);
+            }
+            if ligne == nombre - 1 {
+                peintre.line_segment(horizontal(y + case), epais);
+            }
+            if col == nombre - 1 {
+                peintre.line_segment(vertical(x + case), epais);
+            }
+        }
     }
     clic
 }
@@ -2059,7 +2168,7 @@ mod tests {
     // pour qu'une victoire donne un score
     fn partie_moyenne() -> Partie {
         let grille = Grille::creer(Origine::Fixe).unwrap();
-        Partie::new(grille, Origine::Niveau(Niveau::Moyen, Taille::Neuf))
+        Partie::new(grille, Origine::Niveau(Niveau::Moyen, Taille::Neuf, Variante::Classique))
     }
 
     // Joue tous les bons chiffres : la partie est gagnée sans erreur ni indice
@@ -2129,7 +2238,7 @@ mod tests {
         partie.enregistrer_score(&mut classement);
         assert_eq!(partie.rang, Some(1));
         assert_eq!(partie.nom_joueur, "Lucas");
-        let meilleurs = classement.meilleurs(Taille::Neuf, None, 10);
+        let meilleurs = classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10);
         assert_eq!(meilleurs.len(), 1);
         assert_eq!(meilleurs[0].nom, "Lucas");
         assert_eq!(meilleurs[0].niveau, Niveau::Moyen);
@@ -2137,7 +2246,7 @@ mod tests {
 
         // Un deuxième clic ne crée pas de doublon
         partie.enregistrer_score(&mut classement);
-        assert_eq!(classement.meilleurs(Taille::Neuf, None, 10).len(), 1);
+        assert_eq!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).len(), 1);
 
         let _ = std::fs::remove_file(&chemin);
         let _ = std::fs::remove_file(chemin.with_extension("tmp"));
@@ -2154,7 +2263,7 @@ mod tests {
         partie.enregistrer_score(&mut classement);
         assert_eq!(partie.rang, None);
         assert!(partie.message.contains("nom"));
-        assert!(classement.meilleurs(Taille::Neuf, None, 10).is_empty());
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).is_empty());
     }
 
     #[test]
@@ -2167,13 +2276,13 @@ mod tests {
 
         partie.enregistrer_score(&mut classement);
         assert_eq!(partie.rang, None);
-        assert!(classement.meilleurs(Taille::Neuf, None, 10).is_empty());
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).is_empty());
     }
 
     // Une partie sur une grille générée de la taille demandée, avec peu de cases à trouver
     fn partie_de_taille(taille: Taille) -> Partie {
         let grille = Grille::generer(taille, String::from("Test"), taille.cases() / 8);
-        Partie::new(grille, Origine::Niveau(Niveau::Moyen, taille))
+        Partie::new(grille, Origine::Niveau(Niveau::Moyen, taille, Variante::Classique))
     }
 
     #[test]
@@ -2653,12 +2762,15 @@ mod tests {
             erreur: String::new(),
             classement: Classement::depuis_fichier(chemin_temporaire()),
             taille_choisie: Taille::Neuf,
+            variante_choisie: Variante::Classique,
             taille_classement: Taille::Neuf,
+            variante_classement: Variante::Classique,
             filtre: None,
             dernier_nom: String::new(),
             sauvegarde: Sauvegarde::depuis_fichier(chemin_temporaire()),
             statistiques: Statistiques::depuis_fichier(chemin_temporaire()),
             taille_stats: Taille::Neuf,
+            variante_stats: Variante::Classique,
             filtre_stats: None,
             resolveur: Resolveur::new(),
             reglages: Reglages::default(),
@@ -2682,13 +2794,13 @@ mod tests {
         application.sauvegarder_partie();
         eframe::App::on_exit(&mut application, None);
 
-        let resume = application.statistiques.resume(Taille::Neuf, None);
+        let resume = application.statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(resume.jouees, 1);
         assert_eq!(resume.victoires, 1);
         assert_eq!(resume.meilleur_score, Some(application.partie.as_ref().unwrap().score.unwrap()));
-        assert_eq!(application.statistiques.resume(Taille::Neuf, Some(Niveau::Moyen)).jouees, 1);
-        assert_eq!(application.statistiques.resume(Taille::Neuf, Some(Niveau::Facile)).jouees, 0);
-        assert_eq!(application.statistiques.resume(Taille::Six, None).jouees, 0);
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Variante::Classique, Some(Niveau::Moyen)).jouees, 1);
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Variante::Classique, Some(Niveau::Facile)).jouees, 0);
+        assert_eq!(application.statistiques.resume(Taille::Six, Variante::Classique, None).jouees, 0);
         nettoyer(&application);
     }
 
@@ -2699,14 +2811,14 @@ mod tests {
         assert_eq!(perdue.fin, Some(Fin::Defaite));
         let mut application = application_de_test(perdue);
         application.sauvegarder_partie();
-        let resume = application.statistiques.resume(Taille::Neuf, None);
+        let resume = application.statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!((resume.jouees, resume.defaites, resume.victoires), (1, 1, 0));
 
         let mut abandonnee = partie_moyenne();
         abandonnee.afficher_solution();
         application.partie = Some(abandonnee);
         application.sauvegarder_partie();
-        let resume = application.statistiques.resume(Taille::Neuf, None);
+        let resume = application.statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!((resume.jouees, resume.defaites, resume.abandons), (2, 1, 1));
         nettoyer(&application);
     }
@@ -2717,14 +2829,14 @@ mod tests {
         jouer(&mut en_cours, 0, 2, 4);
         let mut application = application_de_test(en_cours);
         application.sauvegarder_partie();
-        assert_eq!(application.statistiques.resume(Taille::Neuf, None).jouees, 0);
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Variante::Classique, None).jouees, 0);
 
         let mut entrainement = partie_fixe();
         gagner(&mut entrainement);
         assert_eq!(entrainement.fin, Some(Fin::Victoire));
         application.partie = Some(entrainement);
         application.sauvegarder_partie();
-        assert_eq!(application.statistiques.resume(Taille::Neuf, None).jouees, 0);
+        assert_eq!(application.statistiques.resume(Taille::Neuf, Variante::Classique, None).jouees, 0);
         nettoyer(&application);
     }
 
@@ -2878,5 +2990,95 @@ mod tests {
         let mut abandonnee = partie_fixe();
         abandonnee.afficher_solution();
         assert!(abandonnee.sons.is_empty());
+    }
+
+    // Une partie sur une grille générée dans la variante, taille 9×9, niveau Facile
+    fn partie_en_variante(variante: Variante) -> Partie {
+        let grille = Grille::generer_niveau(Niveau::Facile, Taille::Neuf, variante);
+        Partie::new(grille, Origine::Niveau(Niveau::Facile, Taille::Neuf, variante))
+    }
+
+    #[test]
+    fn test_une_partie_en_variante_se_gagne_avec_la_solution() {
+        for variante in Variante::TOUTES {
+            let mut partie = partie_en_variante(variante);
+            gagner(&mut partie);
+            assert_eq!(partie.fin, Some(Fin::Victoire), "{:?}", variante);
+            assert!(partie.score.is_some());
+            assert_eq!(partie.erreurs, 0);
+        }
+    }
+
+    #[test]
+    fn test_la_statistique_garde_la_variante() {
+        let mut partie = partie_en_variante(Variante::Diagonale);
+        gagner(&mut partie);
+        let jouee = partie.vers_statistique().unwrap();
+        assert_eq!(jouee.variante, Variante::Diagonale);
+        assert_eq!(jouee.taille, Taille::Neuf);
+    }
+
+    #[test]
+    fn test_le_score_enregistre_garde_la_variante() {
+        let mut partie = partie_en_variante(Variante::Hyper);
+        gagner(&mut partie);
+        partie.nom_joueur = String::from("Alice");
+        let mut classement = Classement::depuis_fichier(crate::classement::chemin_temporaire());
+        partie.enregistrer_score(&mut classement);
+        assert_eq!(partie.rang, Some(1));
+        assert_eq!(classement.meilleurs(Taille::Neuf, Variante::Hyper, None, 10).len(), 1);
+        // Pas dans le classement classique
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).is_empty());
+    }
+
+    #[test]
+    fn test_un_chiffre_qui_enfreint_la_diagonale_est_pose_en_rouge() {
+        let mut partie = partie_en_variante(Variante::Diagonale);
+        // Une case vide sur la diagonale, et un chiffre déjà présent ailleurs sur cette diagonale
+        let (vide, donne) = (0..9)
+            .flat_map(|i| (0..9).map(move |j| (i, j)))
+            .find_map(|(i, j)| {
+                (i != j
+                    && partie.grille.valeur(i, i) == 0
+                    && partie.grille.valeur(j, j) != 0)
+                    .then_some((i, partie.grille.valeur(j, j)))
+            })
+            .expect("une case vide et un chiffre donné sur la diagonale");
+        assert!(!partie.grille.est_valide(vide, vide, donne));
+        jouer(&mut partie, vide, vide, donne);
+        // Le chiffre est posé, en rouge, et compte une erreur
+        assert_eq!(partie.grille.valeur(vide, vide), donne);
+        assert_eq!(partie.erreurs, 1);
+        assert!(partie.a_des_chiffres_faux());
+    }
+
+    #[test]
+    fn test_une_partie_en_variante_se_sauvegarde_et_se_reprend() {
+        for variante in Variante::TOUTES {
+            let partie = partie_en_variante(variante);
+            let restauree = Partie::restaurer(partie.vers_sauvegarde()).unwrap();
+            assert_eq!(restauree.grille.variante(), variante);
+            assert_eq!(restauree.origine, partie.origine);
+            assert_eq!(restauree.grille.cases(), partie.grille.cases());
+        }
+    }
+
+    #[test]
+    fn test_les_zones_de_la_variante_sont_teintees_et_les_autres_non() {
+        let diagonale = Regles::pour(Taille::Neuf, Variante::Diagonale);
+        assert!(diagonale.est_zone_speciale(0));
+        assert!(!diagonale.est_zone_speciale(1));
+        let classique = Regles::classique(Taille::Neuf);
+        assert!((0..81).all(|case| !classique.est_zone_speciale(case)));
+        // Le mélange de deux couleurs reste entre les deux
+        let melange = moyenne(Color32::from_rgb(0, 100, 200), Color32::from_rgb(100, 200, 0));
+        assert_eq!((melange.r(), melange.g(), melange.b()), (50, 150, 100));
+    }
+
+    #[test]
+    fn test_le_format_d_une_grille_dans_les_titres() {
+        assert_eq!(libelle_format(Taille::Neuf, Variante::Classique), "9×9");
+        assert_eq!(libelle_format(Taille::Neuf, Variante::Diagonale), "9×9 diagonale");
+        assert_eq!(libelle_format(Taille::Douze, Variante::AntiCavalier), "12×12 anti-cavalier");
     }
 }

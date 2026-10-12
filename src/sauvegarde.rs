@@ -1,6 +1,7 @@
 //! La sauvegarde de la partie en cours, pour la reprendre à la prochaine ouverture du jeu.
 
 use crate::grille::{Grille, Niveau, Origine, Taille};
+use crate::regles::Variante;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,7 +54,7 @@ impl PartieSauvee {
     fn vers_texte(&self) -> String {
         let origine = match self.origine {
             Origine::Fixe => "fixe",
-            Origine::Niveau(niveau, _) => niveau.libelle(),
+            Origine::Niveau(niveau, _, _) => niveau.libelle(),
         };
         let nombres = |valeurs: &[u8]| {
             valeurs
@@ -70,10 +71,11 @@ impl PartieSauvee {
             .collect();
 
         let mut texte = format!(
-            "{}\norigine\t{}\ntaille\t{}\nnom\t{}\nerreurs\t{}\nindices\t{}\nsecondes\t{}\ncases\t{}\nfixes\t{}\n",
+            "{}\norigine\t{}\ntaille\t{}\nvariante\t{}\nnom\t{}\nerreurs\t{}\nindices\t{}\nsecondes\t{}\ncases\t{}\nfixes\t{}\n",
             ENTETE,
             origine,
             self.grille.taille().cote(),
+            self.grille.variante().mot(),
             self.grille.nom,
             self.erreurs,
             self.indices,
@@ -106,10 +108,18 @@ impl PartieSauvee {
         }
 
         let taille = Taille::depuis_cote(champs.get("taille")?.parse().ok()?)?;
+        // Les sauvegardes écrites avant les variantes n'ont pas de ligne `variante` : classique
+        let variante = match champs.get("variante") {
+            None => Variante::Classique,
+            Some(mot) => Variante::depuis_mot(mot)?,
+        };
+        if !variante.accepte(taille) {
+            return None;
+        }
         let origine = match *champs.get("origine")? {
-            "fixe" if taille == Taille::Neuf => Origine::Fixe,
+            "fixe" if taille == Taille::Neuf && variante == Variante::Classique => Origine::Fixe,
             "fixe" => return None,
-            libelle => Origine::Niveau(Niveau::depuis_libelle(libelle)?, taille),
+            libelle => Origine::Niveau(Niveau::depuis_libelle(libelle)?, taille, variante),
         };
         let nombres = |texte: &str| -> Option<Vec<u8>> {
             texte.split(',').map(|nombre| nombre.parse().ok()).collect()
@@ -129,6 +139,7 @@ impl PartieSauvee {
         };
         let grille = Grille::restaurer(
             taille,
+            variante,
             champs.get("nom")?.to_string(),
             nombres(champs.get("cases")?)?,
             fixes,
@@ -213,7 +224,7 @@ mod tests {
 
     // Une partie 6×6 où le joueur a posé un bon chiffre et un chiffre faux
     fn partie_en_cours() -> PartieSauvee {
-        let mut grille = Grille::generer_niveau(Niveau::Moyen, Taille::Six);
+        let mut grille = Grille::generer_niveau(Niveau::Moyen, Taille::Six, Variante::Classique);
         let solution = grille.solution().unwrap().to_vec();
         let vides: Vec<usize> = (0..36).filter(|&i| !grille.fixes()[i]).collect();
         let (ligne, col) = (vides[0] / 6, vides[0] % 6);
@@ -223,7 +234,7 @@ mod tests {
         notes[vides[1]] = 0b101;
         PartieSauvee {
             grille,
-            origine: Origine::Niveau(Niveau::Moyen, Taille::Six),
+            origine: Origine::Niveau(Niveau::Moyen, Taille::Six, Variante::Classique),
             erreurs: 2,
             indices: 1,
             secondes: 754,
@@ -248,6 +259,62 @@ mod tests {
     }
 
     #[test]
+    fn test_aller_retour_dans_chaque_variante() {
+        for variante in Variante::TOUTES {
+            let taille = Taille::Neuf;
+            let partie = PartieSauvee {
+                grille: Grille::generer_niveau(Niveau::Facile, taille, variante),
+                origine: Origine::Niveau(Niveau::Facile, taille, variante),
+                erreurs: 1,
+                indices: 0,
+                secondes: 42,
+                notes: vec![0; 81],
+            };
+            let texte = partie.vers_texte();
+            assert!(texte.contains(&format!("variante\t{}", variante.mot())));
+            let relue = PartieSauvee::depuis_texte(&texte).unwrap();
+            assert_eq!(relue.origine, Origine::Niveau(Niveau::Facile, taille, variante));
+            assert_eq!(relue.grille.variante(), variante);
+            assert_eq!(relue.grille.cases(), partie.grille.cases());
+            assert_eq!(relue.grille.solution(), partie.grille.solution());
+            // Les règles de la variante sont bien celles de la grille relue
+            assert_eq!(relue.grille.regles().zones.len(), partie.grille.regles().zones.len());
+        }
+    }
+
+    #[test]
+    fn test_une_ancienne_sauvegarde_sans_variante_est_classique() {
+        let partie = partie_en_cours();
+        let sans_variante: String = partie
+            .vers_texte()
+            .lines()
+            .filter(|ligne| !ligne.starts_with("variante"))
+            .map(|ligne| format!("{}\n", ligne))
+            .collect();
+        let relue = PartieSauvee::depuis_texte(&sans_variante).unwrap();
+        assert_eq!(relue.grille.variante(), Variante::Classique);
+    }
+
+    #[test]
+    fn test_une_variante_inconnue_ou_impossible_est_refusee() {
+        let texte = partie_en_cours().vers_texte();
+        assert!(PartieSauvee::depuis_texte(&texte.replace("variante\tclassique", "variante\tinconnue")).is_none());
+        // La variante hyper n'existe qu'en 9×9 : cette partie est en 6×6
+        assert!(PartieSauvee::depuis_texte(&texte.replace("variante\tclassique", "variante\thyper")).is_none());
+        // Une variante autre que classique n'est pas la grille d'entraînement
+        let entrainement = PartieSauvee {
+            grille: Grille::creer(Origine::Fixe).unwrap(),
+            origine: Origine::Fixe,
+            erreurs: 0,
+            indices: 0,
+            secondes: 0,
+            notes: vec![0; 81],
+        }
+        .vers_texte();
+        assert!(PartieSauvee::depuis_texte(&entrainement.replace("variante\tclassique", "variante\tdiagonale")).is_none());
+    }
+
+    #[test]
     fn test_aller_retour_de_la_grille_d_entrainement() {
         let partie = PartieSauvee {
             grille: Grille::creer(Origine::Fixe).unwrap(),
@@ -265,14 +332,14 @@ mod tests {
     #[test]
     fn test_aller_retour_dans_chaque_taille() {
         for taille in Taille::TOUTES {
-            let grille = Grille::generer_niveau(Niveau::Facile, taille);
+            let grille = Grille::generer_niveau(Niveau::Facile, taille, Variante::Classique);
             // Une case vide avec tous les chiffres en notes (65535 en 16×16)
             let mut notes = vec![0; taille.cases()];
             let vide = grille.cases().iter().position(|&valeur| valeur == 0).unwrap();
             notes[vide] = ((1u32 << taille.cote()) - 1) as u16;
             let partie = PartieSauvee {
                 grille,
-                origine: Origine::Niveau(Niveau::Facile, taille),
+                origine: Origine::Niveau(Niveau::Facile, taille, Variante::Classique),
                 erreurs: 0,
                 indices: 0,
                 secondes: 5,

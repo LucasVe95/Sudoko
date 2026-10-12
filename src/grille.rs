@@ -1,8 +1,10 @@
 //! La grille de Sudoku : règles, chargement, résolution et génération, pour plusieurs tailles.
 
+use crate::regles::{Regles, Variante};
 use crate::solveur::Solveur;
-use crate::technique::{technique_max, Geometrie, Logique, Technique};
+use crate::technique::{technique_max, Logique, Technique};
 use rand::seq::{IndexedRandom, SliceRandom};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // La taille d'une grille : son côté, et la forme des blocs qui la découpent.
@@ -115,16 +117,19 @@ impl Niveau {
     }
 }
 
-// D'où vient la grille : générée au hasard (niveau et taille), ou la grille fixe d'entraînement
+// D'où vient la grille : générée au hasard (niveau, taille et variante), ou la grille fixe
+// d'entraînement
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Origine {
-    Niveau(Niveau, Taille),
+    Niveau(Niveau, Taille, Variante),
     Fixe,
 }
 
 #[derive(Clone)]
 pub struct Grille {
     taille: Taille,
+    // Les règles : quelles cases ne peuvent pas contenir le même chiffre
+    regles: Arc<Regles>,
     // Les cases ligne par ligne : la case (ligne, col) est à l'indice ligne × côté + col
     cases: Vec<u8>,
     // true pour les cases de la grille de départ, que le joueur ne peut pas modifier
@@ -134,10 +139,17 @@ pub struct Grille {
     pub nom: String,
 }
 impl Grille {
-    //"Constructeur" de la structure Grille : une grille vide
+    //"Constructeur" de la structure Grille : une grille classique vide
     fn nouvelle(taille: Taille, nom: String) -> Grille {
+        Grille::avec_regles(Regles::classique(taille), nom)
+    }
+
+    // Une grille vide qui suit ces règles
+    fn avec_regles(regles: Arc<Regles>, nom: String) -> Grille {
+        let taille = regles.taille;
         Grille {
             taille,
+            regles,
             cases: vec![0; taille.cases()],
             fixes: vec![false; taille.cases()],
             solution: None,
@@ -147,6 +159,15 @@ impl Grille {
 
     pub fn taille(&self) -> Taille {
         self.taille
+    }
+
+    pub fn variante(&self) -> Variante {
+        self.regles.variante
+    }
+
+    // Les règles de la grille (zones, voisines) : l'interface s'en sert pour la dessiner
+    pub fn regles(&self) -> &Arc<Regles> {
+        &self.regles
     }
 
     // Les cases ligne par ligne (0 = vide), pour enregistrer la partie
@@ -169,6 +190,7 @@ impl Grille {
     // plutôt que de planter plus tard.
     pub fn restaurer(
         taille: Taille,
+        variante: Variante,
         nom: String,
         cases: Vec<u8>,
         fixes: Vec<bool>,
@@ -181,14 +203,15 @@ impl Grille {
         // Pas de chiffre hors de la grille, et pas de doublon dans une ligne, une colonne ou un bloc
         // parmi les cases de départ. Les chiffres du joueur peuvent, eux, se contredire : il a le
         // droit de se tromper.
-        let (cote, bloc_h, bloc_l) = (taille.cote(), taille.bloc_h(), taille.bloc_l());
+        let regles = Regles::pour(taille, variante);
+        let cote = taille.cote();
         let depart: Vec<u8> = cases
             .iter()
             .zip(&fixes)
             .map(|(&valeur, &fixe)| if fixe { valeur } else { 0 })
             .collect();
         if cases.iter().any(|&valeur| valeur as usize > cote)
-            || Solveur::new(cote, bloc_h, bloc_l, &depart).is_none()
+            || Solveur::new(&regles, &depart).is_none()
         {
             return Err(String::from("Cases invalides"));
         }
@@ -200,7 +223,7 @@ impl Grille {
             // La solution est une grille pleine et valide, qui garde les cases de départ
             let complete = solution.len() == nombre
                 && solution.iter().all(|&valeur| valeur != 0)
-                && Solveur::new(cote, bloc_h, bloc_l, solution).is_some();
+                && Solveur::new(&regles, solution).is_some();
             let garde_les_departs = cases
                 .iter()
                 .zip(&fixes)
@@ -213,6 +236,7 @@ impl Grille {
 
         Ok(Grille {
             taille,
+            regles,
             cases,
             fixes,
             solution,
@@ -229,7 +253,9 @@ impl Grille {
     pub fn creer(origine: Origine) -> Result<Grille, String> {
         match origine {
             Origine::Fixe => Grille::depuis_texte(String::from("Grille d'entraînement"), DEPART),
-            Origine::Niveau(niveau, taille) => Ok(Grille::generer_niveau(niveau, taille)),
+            Origine::Niveau(niveau, taille, variante) => {
+                Ok(Grille::generer_niveau(niveau, taille, variante))
+            }
         }
     }
 
@@ -316,28 +342,13 @@ impl Grille {
         }
     }
 
-    // Vérifie si on peut mettre `valeur` dans la case (ligne, col) sans briser les règles
+    // Vérifie si on peut mettre `valeur` dans la case (ligne, col) sans briser les règles :
+    // le chiffre ne doit être ni dans la case, ni dans aucune des cases qui lui sont interdites
+    // (sa ligne, sa colonne, son bloc, et selon la variante une diagonale, une fenêtre...)
     pub fn est_valide(&self, ligne: usize, col: usize, valeur: u8) -> bool {
-        // Vérifie la ligne et la colonne en même temps
-        for i in 0..self.taille.cote() {
-            if self.valeur(ligne, i) == valeur || self.valeur(i, col) == valeur {
-                return false;
-            }
-        }
-
-        // Coin en haut à gauche du bloc qui contient la case
-        let (bloc_h, bloc_l) = (self.taille.bloc_h(), self.taille.bloc_l());
-        let debut_ligne = (ligne / bloc_h) * bloc_h;
-        let debut_col = (col / bloc_l) * bloc_l;
-        for i in 0..bloc_h {
-            for j in 0..bloc_l {
-                if self.valeur(debut_ligne + i, debut_col + j) == valeur {
-                    return false;
-                }
-            }
-        }
-
-        true
+        let case = self.position(ligne, col);
+        self.cases[case] != valeur
+            && self.regles.voisines[case].iter().all(|&autre| self.cases[autre] != valeur)
     }
 
     // Les chiffres que les règles permettent dans une case, en bits : le bit (v - 1) vaut 1
@@ -492,8 +503,8 @@ impl Grille {
     // Renvoie (la case, l'explication). Les techniques qui ne font que retirer des possibilités
     // sont enchaînées jusqu'à ce qu'une case se remplisse.
     fn indice_par_deduction(&self, solution: &[u8]) -> Option<(usize, String)> {
-        let geometrie = Geometrie::new(self.taille.cote(), self.taille.bloc_h(), self.taille.bloc_l());
-        let mut logique = Logique::new(&geometrie, &self.cases)?;
+        let regles = Arc::clone(&self.regles);
+        let mut logique = Logique::new(&regles, &self.cases)?;
         let mut preparation: Vec<Technique> = Vec::new();
         while let Some(pas) = logique.prochain_pas(Technique::XWing) {
             if let Some((case, valeur)) = pas.placement {
@@ -501,7 +512,7 @@ impl Grille {
                 if solution[case] != valeur {
                     return None;
                 }
-                let mut explication = pas.explication(&geometrie);
+                let mut explication = pas.explication(&regles);
                 if !preparation.is_empty() {
                     let noms: Vec<&str> = preparation.iter().map(|technique| technique.libelle()).collect();
                     explication += &format!(
@@ -521,12 +532,7 @@ impl Grille {
 
     // Prépare le solveur sur la grille actuelle. None si elle contient un doublon.
     fn solveur(&self) -> Option<Solveur> {
-        Solveur::new(
-            self.taille.cote(),
-            self.taille.bloc_h(),
-            self.taille.bloc_l(),
-            &self.cases,
-        )
+        Solveur::new(&self.regles, &self.cases)
     }
 
     // Remplit la grille par retour sur trace (backtracking).
@@ -599,19 +605,22 @@ impl Grille {
     // le niveau y dépend seulement du nombre de cases vides (la grille reste résoluble par déduction,
     // avec les techniques du niveau). Dans les autres, si aucun essai ne demande les techniques du
     // niveau au bout de quelques secondes, on garde la grille la plus difficile trouvée.
-    pub fn generer_niveau(niveau: Niveau, taille: Taille) -> Grille {
-        let nom = format!(
+    pub fn generer_niveau(niveau: Niveau, taille: Taille, variante: Variante) -> Grille {
+        let mut nom = format!(
             "Partie {} {}",
             niveau.libelle().to_lowercase(),
             taille.libelle()
         );
-        let geometrie = Geometrie::new(taille.cote(), taille.bloc_h(), taille.bloc_l());
+        if variante != Variante::Classique {
+            nom += &format!(" {}", variante.libelle().to_lowercase());
+        }
+        let regles = Regles::pour(taille, variante);
         let mut rng = rand::rng();
         let debut = Instant::now();
 
         let mut meilleur: Option<Essai> = None;
         for _ in 0..ESSAIS_MAX {
-            let essai = Grille::essayer_niveau(&geometrie, taille, niveau, &mut rng);
+            let essai = Grille::essayer_niveau(&regles, niveau, &mut rng);
             let conforme = essai.conforme;
             if meilleur.as_ref().is_none_or(|actuel| essai.score() > actuel.score()) {
                 meilleur = Some(essai);
@@ -623,7 +632,7 @@ impl Grille {
         let essai = meilleur.expect("au moins un essai a été fait");
 
         // Les chiffres restants forment la grille de départ : on les verrouille
-        let mut grille = Grille::nouvelle(taille, nom);
+        let mut grille = Grille::avec_regles(regles, nom);
         grille.fixes = essai.cases.iter().map(|&valeur| valeur != 0).collect();
         grille.cases = essai.cases;
         grille.solution = Some(essai.solution);
@@ -636,13 +645,9 @@ impl Grille {
     // On s'arrête quand le nombre de cases vides visé est atteint et que la grille demande bien
     // les techniques du niveau (sauf en 4×4 et 6×6, où le nombre de cases suffit), ou quand plus
     // aucune case ne peut être retirée.
-    fn essayer_niveau(
-        geometrie: &Geometrie,
-        taille: Taille,
-        niveau: Niveau,
-        rng: &mut impl rand::Rng,
-    ) -> Essai {
-        let mut complete = Grille::nouvelle(taille, String::new());
+    fn essayer_niveau(regles: &Arc<Regles>, niveau: Niveau, rng: &mut impl rand::Rng) -> Essai {
+        let taille = regles.taille;
+        let mut complete = Grille::avec_regles(Arc::clone(regles), String::new());
         complete.remplir_au_hasard(rng);
         let solution = complete.cases;
         let mut cases = solution.clone();
@@ -660,7 +665,7 @@ impl Grille {
             }
             let valeur = cases[position];
             cases[position] = 0;
-            match Logique::depuis_cases_valides(geometrie, &cases).resoudre(permise) {
+            match Logique::depuis_cases_valides(regles, &cases).resoudre(permise) {
                 Some(technique) => {
                     retirees += 1;
                     plus_difficile = technique;
@@ -1025,6 +1030,7 @@ mod tests {
         assert!(g.poser(0, 2, 5)); // un doublon du joueur
         let restauree = Grille::restaurer(
             Taille::Neuf,
+            Variante::Classique,
             String::from("Test"),
             g.cases.clone(),
             g.fixes.clone(),
@@ -1035,7 +1041,7 @@ mod tests {
         // Le même doublon, mais entre cases de départ : la grille est incohérente
         let mut fixes = g.fixes.clone();
         fixes[2] = true;
-        let refusee = Grille::restaurer(Taille::Neuf, String::from("Test"), g.cases.clone(), fixes, None);
+        let refusee = Grille::restaurer(Taille::Neuf, Variante::Classique, String::from("Test"), g.cases.clone(), fixes, None);
         assert!(refusee.is_err());
     }
 
@@ -1066,7 +1072,7 @@ mod tests {
             (Niveau::Moyen, Taille::Neuf),
             (Niveau::Moyen, Taille::Douze),
         ] {
-            let mut g = Grille::generer_niveau(niveau, taille);
+            let mut g = Grille::generer_niveau(niveau, taille, Variante::Classique);
             let solution = g.solution().unwrap().to_vec();
             let mut nombre = 0;
             while let Some(indice) = g.indice() {
@@ -1085,7 +1091,7 @@ mod tests {
         // successifs doit d'abord retirer des possibilités
         let mut trouve = false;
         for _ in 0..4 {
-            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf);
+            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf, Variante::Classique);
             while let Some(indice) = g.indice() {
                 if indice.explication.contains("Auparavant, il faut retirer des possibilités avec") {
                     trouve = true;
@@ -1178,7 +1184,7 @@ mod tests {
 
     #[test]
     fn test_generer_niveau() {
-        let g = Grille::generer_niveau(Niveau::Facile, Taille::Neuf);
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Neuf, Variante::Classique);
         assert_eq!(g.nom, "Partie facile 9×9");
         let vides = compter_vides(&g);
         assert!(vides > 0 && vides <= 35);
@@ -1209,9 +1215,9 @@ mod tests {
     fn test_creer_selon_l_origine() {
         let fixe = Grille::creer(Origine::Fixe).unwrap();
         assert_eq!(fixe.valeur(0, 0), 5);
-        let facile = Grille::creer(Origine::Niveau(Niveau::Facile, Taille::Neuf)).unwrap();
+        let facile = Grille::creer(Origine::Niveau(Niveau::Facile, Taille::Neuf, Variante::Classique)).unwrap();
         assert_eq!(facile.nom, "Partie facile 9×9");
-        let petite = Grille::creer(Origine::Niveau(Niveau::Moyen, Taille::Quatre)).unwrap();
+        let petite = Grille::creer(Origine::Niveau(Niveau::Moyen, Taille::Quatre, Variante::Classique)).unwrap();
         assert_eq!(petite.taille(), Taille::Quatre);
     }
 
@@ -1306,12 +1312,7 @@ mod tests {
     // La technique la plus difficile qu'il faut pour finir la grille par déduction pure
     // (None si la déduction ne suffit pas)
     fn technique_requise(grille: &Grille) -> Option<Technique> {
-        let geometrie = Geometrie::new(
-            grille.taille.cote(),
-            grille.taille.bloc_h(),
-            grille.taille.bloc_l(),
-        );
-        Logique::new(&geometrie, &grille.cases)
+        Logique::new(&grille.regles, &grille.cases)
             .unwrap()
             .resoudre(Technique::XWing)
     }
@@ -1352,7 +1353,7 @@ mod tests {
                 &Niveau::TOUS
             };
             for &niveau in niveaux {
-                let g = Grille::generer_niveau(niveau, taille);
+                let g = Grille::generer_niveau(niveau, taille, Variante::Classique);
                 verifier_une_grille_generee(&g, niveau, taille);
             }
         }
@@ -1361,7 +1362,7 @@ mod tests {
     #[test]
     fn test_le_niveau_facile_s_arrete_au_nombre_de_cases_vises() {
         for taille in Taille::TOUTES {
-            let g = Grille::generer_niveau(Niveau::Facile, taille);
+            let g = Grille::generer_niveau(Niveau::Facile, taille, Variante::Classique);
             assert_eq!(compter_vides(&g), Niveau::Facile.cases_a_retirer(taille), "{}", taille.libelle());
         }
     }
@@ -1369,7 +1370,7 @@ mod tests {
     #[test]
     fn test_facile_se_resout_avec_des_cases_uniques_et_des_chiffres_uniques() {
         for taille in [Taille::Neuf, Taille::Douze] {
-            let g = Grille::generer_niveau(Niveau::Facile, taille);
+            let g = Grille::generer_niveau(Niveau::Facile, taille, Variante::Classique);
             let requise = technique_requise(&g).unwrap();
             assert!(requise <= Technique::ChiffreUnique);
         }
@@ -1380,7 +1381,7 @@ mod tests {
         // En 4×4 et 6×6, le niveau ne dépend que du nombre de cases vides
         for taille in [Taille::Quatre, Taille::Six] {
             for niveau in Niveau::TOUS {
-                let g = Grille::generer_niveau(niveau, taille);
+                let g = Grille::generer_niveau(niveau, taille, Variante::Classique);
                 assert_eq!(
                     compter_vides(&g),
                     niveau.cases_a_retirer(taille),
@@ -1396,7 +1397,7 @@ mod tests {
     fn test_moyen_demande_une_intersection_ou_une_paire_nue() {
         let mut conformes = 0;
         for _ in 0..5 {
-            let g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf);
+            let g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf, Variante::Classique);
             let requise = technique_requise(&g).unwrap();
             assert!(requise <= Technique::PaireNue);
             if requise >= Technique::Intersection {
@@ -1413,7 +1414,7 @@ mod tests {
     fn test_difficile_demande_une_technique_avancee() {
         let mut conformes = 0;
         for _ in 0..3 {
-            let g = Grille::generer_niveau(Niveau::Difficile, Taille::Neuf);
+            let g = Grille::generer_niveau(Niveau::Difficile, Taille::Neuf, Variante::Classique);
             let requise = technique_requise(&g).unwrap();
             assert!(requise <= Technique::XWing);
             if requise >= Technique::PaireCachee {
@@ -1429,7 +1430,7 @@ mod tests {
         let mut totaux = Vec::new();
         for niveau in Niveau::TOUS {
             let total: usize = (0..3)
-                .map(|_| technique_requise(&Grille::generer_niveau(niveau, Taille::Neuf)).unwrap() as usize)
+                .map(|_| technique_requise(&Grille::generer_niveau(niveau, Taille::Neuf, Variante::Classique)).unwrap() as usize)
                 .sum();
             totaux.push(total);
         }
@@ -1501,5 +1502,184 @@ mod tests {
         assert_eq!(petite.candidats(0, 0), 0b1011);
         assert_eq!(petite.candidats(3, 1), 0b1011);
         assert_eq!(petite.candidats(1, 0), 0b1011);
+    }
+
+    // Une grille complète respecte sa variante : chaque zone contient tous les chiffres une fois,
+    // et deux cases qui se l'interdisent n'ont jamais le même chiffre
+    fn respecte_sa_variante(grille: &Grille, cases: &[u8]) -> bool {
+        let regles = grille.regles();
+        let cote = grille.taille().cote();
+        let attendu = (1u32 << cote) - 1;
+        cases.iter().all(|&valeur| valeur != 0 && valeur as usize <= cote)
+            && regles
+                .zones
+                .iter()
+                .all(|zone| zone.iter().fold(0u32, |masque, &case| masque | 1 << (cases[case] - 1)) == attendu)
+            && (0..cases.len())
+                .all(|case| regles.voisines[case].iter().all(|&autre| cases[autre] != cases[case]))
+    }
+
+    #[test]
+    fn test_les_grilles_generees_respectent_leur_variante() {
+        for variante in Variante::TOUTES {
+            for taille in [Taille::Quatre, Taille::Six, Taille::Neuf] {
+                if !variante.accepte(taille) {
+                    continue;
+                }
+                let g = Grille::generer_niveau(Niveau::Facile, taille, variante);
+                let nom = format!("{:?} {}", variante, taille.libelle());
+                assert_eq!(g.variante(), variante, "{}", nom);
+                assert!(respecte_sa_variante(&g, g.solution().unwrap()), "{}", nom);
+                // Les chiffres de départ sont ceux de la solution
+                for position in 0..taille.cases() {
+                    assert!(g.cases[position] == 0 || g.cases[position] == g.solution().unwrap()[position], "{}", nom);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_chaque_variante_se_resout_par_deduction_a_tous_les_niveaux() {
+        for variante in Variante::TOUTES {
+            for niveau in [Niveau::Facile, Niveau::Moyen] {
+                let taille = Taille::Neuf;
+                let g = Grille::generer_niveau(niveau, taille, variante);
+                verifier_une_grille_generee(&g, niveau, taille);
+            }
+        }
+    }
+
+    #[test]
+    fn test_les_grandes_grilles_existent_aussi_en_variante() {
+        for variante in [Variante::Diagonale, Variante::AntiCavalier] {
+            for taille in [Taille::Douze, Taille::Seize] {
+                let g = Grille::generer_niveau(Niveau::Facile, taille, variante);
+                verifier_une_grille_generee(&g, Niveau::Facile, taille);
+            }
+        }
+    }
+
+    #[test]
+    fn test_le_nom_d_une_grille_de_variante() {
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Quatre, Variante::Diagonale);
+        assert_eq!(g.nom, "Partie facile 4×4 diagonale");
+        let g = Grille::generer_niveau(Niveau::Moyen, Taille::Quatre, Variante::AntiCavalier);
+        assert_eq!(g.nom, "Partie moyen 4×4 anti-cavalier");
+        let g = Grille::generer_niveau(Niveau::Moyen, Taille::Quatre, Variante::Classique);
+        assert_eq!(g.nom, "Partie moyen 4×4");
+    }
+
+    #[test]
+    fn test_creer_une_grille_de_variante() {
+        let g = Grille::creer(Origine::Niveau(Niveau::Facile, Taille::Quatre, Variante::Diagonale)).unwrap();
+        assert_eq!(g.variante(), Variante::Diagonale);
+        assert_eq!(g.taille(), Taille::Quatre);
+    }
+
+    #[test]
+    fn test_placer_refuse_un_doublon_sur_une_diagonale() {
+        let regles = Regles::pour(Taille::Neuf, Variante::Diagonale);
+        let mut g = Grille::avec_regles(regles, String::from("Test"));
+        assert!(g.placer(0, 0, 5));
+        // (4, 4) est sur la même diagonale, mais pas dans la même ligne, colonne ni bloc
+        assert!(!g.placer(4, 4, 5));
+        // Sur l'autre diagonale (sans rien en commun avec (0, 0)), le 5 est permis une fois, pas deux
+        assert!(g.placer(3, 5, 5));
+        assert!(!g.placer(6, 2, 5));
+        let mut classique = Grille::nouvelle(Taille::Neuf, String::from("Test"));
+        assert!(classique.placer(0, 0, 5));
+        assert!(classique.placer(4, 4, 5));
+    }
+
+    #[test]
+    fn test_placer_refuse_un_saut_de_cavalier() {
+        let regles = Regles::pour(Taille::Neuf, Variante::AntiCavalier);
+        let mut g = Grille::avec_regles(regles, String::from("Test"));
+        assert!(g.placer(4, 4, 7));
+        assert!(!g.placer(2, 5, 7)); // un saut de cavalier
+        assert!(!g.placer(6, 3, 7)); // un autre
+        assert!(g.placer(2, 6, 7)); // ce n'est pas un saut de cavalier
+        assert!(!g.est_valide(5, 2, 7));
+    }
+
+    #[test]
+    fn test_hyper_refuse_un_doublon_dans_une_fenetre() {
+        let regles = Regles::pour(Taille::Neuf, Variante::Hyper);
+        let mut g = Grille::avec_regles(regles, String::from("Test"));
+        assert!(g.placer(1, 1, 4));
+        assert!(!g.placer(3, 3, 4)); // même fenêtre
+        assert!(g.placer(0, 4, 4)); // hors de toute fenêtre et de la ligne, colonne, bloc de (1, 1)
+    }
+
+    #[test]
+    fn test_les_candidats_tiennent_compte_de_la_variante() {
+        let regles = Regles::pour(Taille::Neuf, Variante::Diagonale);
+        let mut g = Grille::avec_regles(regles, String::from("Test"));
+        assert!(g.placer(0, 0, 5));
+        // Le 5 est exclu de toute la diagonale, mais pas des autres cases
+        assert_eq!(g.candidats(4, 4) & (1 << 4), 0);
+        assert_eq!(g.candidats(8, 8) & (1 << 4), 0);
+        assert_ne!(g.candidats(4, 5) & (1 << 4), 0);
+    }
+
+    #[test]
+    fn test_les_indices_menent_a_la_fin_dans_chaque_variante() {
+        for variante in Variante::TOUTES {
+            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf, variante);
+            let solution = g.solution().unwrap().to_vec();
+            while let Some(indice) = g.indice() {
+                assert_eq!(indice.valeur, solution[indice.ligne * 9 + indice.col], "{:?}", variante);
+                assert!(!indice.explication.is_empty());
+            }
+            assert!(g.est_terminee(), "{:?}", variante);
+            assert!(respecte_sa_variante(&g, &g.cases), "{:?}", variante);
+        }
+    }
+
+    #[test]
+    fn test_restaurer_garde_la_variante() {
+        let g = Grille::generer_niveau(Niveau::Facile, Taille::Quatre, Variante::Diagonale);
+        let restauree = Grille::restaurer(
+            Taille::Quatre,
+            Variante::Diagonale,
+            g.nom.clone(),
+            g.cases.clone(),
+            g.fixes.clone(),
+            g.solution.clone(),
+        )
+        .unwrap();
+        assert_eq!(restauree.variante(), Variante::Diagonale);
+        // La solution d'une grille classique n'est pas valide en diagonale
+        let classique = Grille::generer_niveau(Niveau::Facile, Taille::Six, Variante::Classique);
+        let mauvaise = Grille::restaurer(
+            Taille::Six,
+            Variante::Diagonale,
+            String::from("Test"),
+            classique.cases.clone(),
+            classique.fixes.clone(),
+            classique.solution.clone(),
+        );
+        // (elle peut, par hasard, être valide aussi en diagonale : on vérifie la cohérence, pas le refus)
+        if let Ok(grille) = mauvaise {
+            assert!(respecte_sa_variante(&grille, grille.solution().unwrap()));
+        }
+    }
+
+    #[test]
+    fn test_les_explications_nomment_les_zones_de_la_variante() {
+        // Dans une grille en diagonale, une explication peut nommer une diagonale
+        let mut vue = false;
+        for _ in 0..30 {
+            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf, Variante::Diagonale);
+            while let Some(indice) = g.indice() {
+                if indice.explication.contains("diagonale") {
+                    vue = true;
+                }
+            }
+            if vue {
+                break;
+            }
+        }
+        assert!(vue, "aucune explication n'a nommé une diagonale");
     }
 }

@@ -16,11 +16,12 @@ Déjà présent :
 - Génération de grilles aléatoires à solution unique, en trois niveaux fondés sur les techniques de déduction qu'il faut pour les résoudre
 - Indices : le programme révèle une case et explique la technique de déduction qui la trouve
 - Interface graphique (avec [egui](https://github.com/emilk/egui)) : clic ou flèches pour choisir une case, clavier ou boutons pour les nombres
-- Menu : choix de la taille et du niveau, grille d'entraînement, reprise de la partie en cours
+- Menu : choix de la taille, de la variante et du niveau, grille d'entraînement, reprise de la partie en cours
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
-- Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
-- Statistiques par taille et par niveau : victoires, meilleur temps, séries
+- Score à chaque victoire et classement des meilleurs scores par taille et par variante, conservé d'une session à l'autre
+- Statistiques par taille, par variante et par niveau : victoires, meilleur temps, séries
+- **Variantes** : diagonale, hyper et anti-cavalier, en plus du Sudoku classique
 - Réglages : thème clair ou sombre, mode daltonien, sons, mise en valeur des cases
 - Résolution d'une grille de journal saisie ou collée, avec détection des erreurs de saisie et des grilles à plusieurs solutions
 - Notes au crayon dans les cases vides, avec un remplissage automatique des chiffres permis
@@ -32,7 +33,7 @@ Déjà présent :
 
 ### Dans la fenêtre (par défaut)
 
-Le programme s'ouvre sur le **menu** : choisissez une taille de grille (4×4 à 16×16) puis un niveau (`Facile`, `Moyen`, `Difficile`), ou lancez la grille d'entraînement, ou reprenez la partie en cours.
+Le programme s'ouvre sur le **menu** : choisissez une taille de grille (4×4 à 16×16), une variante (`Classique`, `Diagonale`, `Hyper`, `Anti-cavalier`) puis un niveau (`Facile`, `Moyen`, `Difficile`), ou lancez la grille d'entraînement, ou reprenez la partie en cours.
 
 **La difficulté se mesure aux techniques.** Une grille n'est pas plus difficile parce qu'elle a plus de cases vides, mais parce qu'il faut des déductions plus subtiles pour la finir. Le programme résout chaque grille générée comme un humain, sans jamais deviner, en essayant les techniques de la plus simple à la plus difficile, et il mesure la plus difficile dont il a eu besoin :
 
@@ -95,7 +96,7 @@ Une grande grille prend plus de temps : les points de départ et les pénalités
 - Windows : `%APPDATA%\Sudoko\partie.txt`
 - Linux et macOS : `~/.local/share/Sudoko/partie.txt`
 
-**Classement.** À la victoire, tapez votre nom (20 caractères au plus) puis `Enregistrer` ou `Entrée`. Le nom du dernier joueur est proposé d'office. Le menu donne accès au `Classement` : les 10 meilleurs scores d'une taille de grille, tous niveaux confondus ou par niveau. Chaque taille a son propre classement, car les scores de tailles différentes ne se comparent pas. À score égal, la partie la plus rapide passe devant.
+**Classement.** À la victoire, tapez votre nom (20 caractères au plus) puis `Enregistrer` ou `Entrée`. Le nom du dernier joueur est proposé d'office. Le menu donne accès au `Classement` : les 10 meilleurs scores d'une taille de grille, tous niveaux confondus ou par niveau. Chaque taille et chaque variante a son propre classement, car les scores de tailles ou de variantes différentes ne se comparent pas. À score égal, la partie la plus rapide passe devant.
 
 Le classement est enregistré dans un fichier texte, en dehors du dépôt, et il est donc conservé d'une session à l'autre :
 
@@ -115,6 +116,20 @@ Les statistiques sont dans un fichier texte à côté du classement, que l'on pe
 
 - Windows : `%APPDATA%\Sudoko\statistiques.txt`
 - Linux et macOS : `~/.local/share/Sudoko/statistiques.txt`
+
+### Variantes
+
+Le menu propose, en plus du Sudoku classique, trois variantes qui ajoutent une règle. Les zones qui comptent en plus sont colorées dans la grille, et la règle est rappelée sous le titre de la partie.
+
+| Variante | Règle en plus | Tailles |
+| -------- | ------------- | ------- |
+| **Diagonale** | Les deux grandes diagonales contiennent aussi chaque nombre une seule fois. | toutes |
+| **Hyper** | Quatre fenêtres de 3×3, en couleur, contiennent aussi chaque nombre une seule fois. | 9×9 |
+| **Anti-cavalier** | Deux cases séparées par un saut de cavalier (comme aux échecs) n'ont pas le même nombre. | toutes |
+
+Tout fonctionne comme en classique : les trois niveaux (mesurés aux techniques de déduction, les diagonales et les fenêtres comptant comme des zones pour « chiffre unique », les paires, les intersections...), les indices expliqués, les notes, l'annulation, les chiffres faux en rouge et la sauvegarde. En sélectionnant une case, on met en valeur toutes les cases qui ne peuvent pas contenir le même nombre : pour l'anti-cavalier, cela montre les sauts de cavalier. Le score, le classement et les statistiques sont séparés par variante.
+
+L'écran « Résoudre une grille » ne gère que les grilles classiques.
 
 ### Résoudre une grille
 
@@ -170,12 +185,14 @@ cargo run
 
 La première compilation télécharge et compile l'interface graphique : elle prend quelques minutes et beaucoup de mémoire. Si elle échoue par manque de mémoire, limitez le parallélisme avec `cargo build -j 2`. Les compilations suivantes sont rapides.
 
-Sans argument, le programme ouvre la fenêtre sur le menu. Pour lancer directement une partie, donnez le niveau, puis éventuellement la taille de la grille (4, 6, 9, 12 ou 16 ; 9 par défaut) :
+Sans argument, le programme ouvre la fenêtre sur le menu. Pour lancer directement une partie, donnez le niveau, puis éventuellement la taille de la grille (4, 6, 9, 12 ou 16 ; 9 par défaut) et la variante (`classique` par défaut, `diagonale`, `hyper` ou `anticavalier`) :
 
 ```bash
 cargo run -- facile          # grille 9×9 facile
 cargo run -- difficile 16    # grille 16×16 difficile
 cargo run -- moyen 6         # grille 6×6 moyenne
+cargo run -- moyen 9 diagonale     # grille 9×9 moyenne en diagonale
+cargo run -- difficile 12 anticavalier
 cargo run -- fixe            # toujours la même grille d'entraînement (9×9 seulement)
 ```
 
@@ -184,7 +201,10 @@ Pour jouer au terminal au lieu de la fenêtre, ajoutez `terminal` en premier. Le
 ```bash
 cargo run -- terminal              # grille 9×9 moyenne
 cargo run -- terminal facile 12    # ou difficile, fixe ; taille 4, 6, 9, 12 ou 16
+cargo run -- terminal moyen 9 hyper
 ```
+
+Au terminal, une variante n'est pas colorée : la règle en plus est rappelée au début de la partie.
 
 La génération d'une grille prend en général moins d'une seconde, et quelques secondes au plus pour une grande grille difficile avec `cargo run`. Elle est bien plus rapide avec `cargo run --release` (environ une seconde au plus, pour une 16×16 difficile).
 
@@ -237,8 +257,9 @@ Sudoko/
 │   ├── statistiques.rs # Parties terminées enregistrées dans un fichier, et calcul des statistiques
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
 │   ├── reglages.rs # Réglages du joueur (thème, couleurs, sons) enregistrés dans un fichier
+│   ├── regles.rs # Les règles d'une grille : zones, voisines, variantes (diagonale, hyper, anti-cavalier)
 │   ├── resolveur.rs # Saisie d'une grille 9×9 et sa résolution (écran « Résoudre une grille »)
-│   ├── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
+│   ├── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte), pour toutes les variantes
 │   ├── technique.rs # Résolution « à la main » par déduction : mesure de la difficulté et explication des indices
 │   └── sons.rs   # Les bips du jeu (Windows)
 ├── LICENSE

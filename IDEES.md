@@ -13,7 +13,7 @@ Liste des fonctionnalités envisagées pour Sudoko, avec ce que chacune apporte 
 | 7 | **Vraie difficulté** | La difficulté serait mesurée par les techniques nécessaires (case forcée, etc.) plutôt que par le nombre de cases vides. Un indice pourrait alors expliquer la technique. | Élevé | Fait |
 | 8 | **Réglages** | Thème sombre, mode pour daltoniens, sons. | Faible à moyen | Fait |
 | 9 | **Jouer dans le navigateur** | `egui` peut tourner dans une page web, avec un lien à partager. Il faudrait changer la sauvegarde et la génération en arrière-plan. | Élevé | À faire |
-| 10 | **Autres variantes** | Sudoku diagonal ou à régions irrégulières. Le solveur serait à adapter. | Moyen à élevé | À faire |
+| 10 | **Autres variantes** | Sudoku diagonal ou à régions irrégulières. Le solveur serait à adapter. | Moyen à élevé | En cours : diagonale, hyper et anti-cavalier faits |
 
 ## Ordre conseillé
 

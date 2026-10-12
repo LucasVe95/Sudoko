@@ -1,6 +1,7 @@
 //! La boucle de jeu au terminal : lecture des commandes du joueur et réactions du programme.
 
 use crate::grille::Grille;
+use crate::regles::Variante;
 use std::io;
 
 // Une commande tapée par le joueur
@@ -65,6 +66,10 @@ fn afficher_solution(grille: &mut Grille) {
 // Boucle de jeu : lit les commandes du joueur jusqu'à la victoire ou jusqu'à ce qu'il quitte
 pub fn jouer(mut grille: Grille) {
     println!("{}", grille.nom);
+    if grille.variante() != Variante::Classique {
+        // Le terminal ne colore pas les zones de la variante : on rappelle la règle en plus
+        println!("{}", grille.variante().regle());
+    }
     let cote = grille.taille().cote();
     loop {
         grille.afficher();

@@ -1,7 +1,9 @@
 //! La saisie d'une grille 9×9 (celle d'un journal, par exemple) et sa résolution par le solveur.
 
 use crate::grille::Taille;
+use crate::regles::Regles;
 use crate::solveur::{analyser, Verdict};
+use std::sync::Arc;
 
 const COTE: usize = 9;
 
@@ -10,6 +12,8 @@ const COTE: usize = 9;
 const MINIMUM_POUR_UNE_SOLUTION_UNIQUE: usize = 17;
 
 pub struct Resolveur {
+    // Les règles de la grille (classique, 9×9) : le solveur et le dessin s'en servent
+    regles: Arc<Regles>,
     // Les chiffres saisis, ligne par ligne (0 = case vide)
     saisie: Vec<u8>,
     // La solution, une fois la grille résolue
@@ -23,6 +27,7 @@ pub struct Resolveur {
 impl Resolveur {
     pub fn new() -> Resolveur {
         Resolveur {
+            regles: Regles::classique(Taille::Neuf),
             saisie: vec![0; COTE * COTE],
             solution: None,
             selection: None,
@@ -30,8 +35,13 @@ impl Resolveur {
         }
     }
 
+    #[cfg(test)]
     pub fn taille(&self) -> Taille {
         Taille::Neuf
+    }
+
+    pub fn regles(&self) -> &Arc<Regles> {
+        &self.regles
     }
 
     // Le chiffre affiché dans une case : celui qui a été saisi, sinon celui de la solution
@@ -172,7 +182,7 @@ impl Resolveur {
             return false;
         }
 
-        let verdict = analyser(COTE, 3, 3, &self.saisie);
+        let verdict = analyser(&self.regles, &self.saisie);
         let (solution, message) = match verdict {
             // Les conflits ont déjà été écartés : le solveur ne peut pas refuser la grille
             None => (None, String::from("Grille invalide")),

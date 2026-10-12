@@ -1,6 +1,7 @@
 //! Le score d'une partie et le classement des meilleurs scores, enregistré dans un fichier.
 
 use crate::grille::{Niveau, Taille};
+use crate::regles::Variante;
 use crate::sauvegarde::{dossier_donnees, ecrire_fichier};
 use std::fs;
 use std::path::PathBuf;
@@ -84,6 +85,7 @@ pub struct Entree {
     pub nom: String,
     pub niveau: Niveau,
     pub taille: Taille,
+    pub variante: Variante,
     pub score: u32,
     pub duree_secondes: u64,
     // Quand la partie a été gagnée (secondes depuis 1970) : départage les égalités
@@ -92,16 +94,17 @@ pub struct Entree {
 
 impl Entree {
     // Une entrée par ligne dans le fichier, les champs séparés par des tabulations.
-    // La taille est enregistrée par son côté (9 pour une grille 9×9).
+    // La taille est enregistrée par son côté (9 pour une grille 9×9), puis la variante par son mot.
     fn vers_ligne(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.nom,
             self.niveau.libelle(),
             self.score,
             self.duree_secondes,
             self.horodatage,
-            self.taille.cote()
+            self.taille.cote(),
+            self.variante.mot()
         )
     }
 
@@ -119,6 +122,11 @@ impl Entree {
             None => Taille::Neuf,
             Some(cote) => Taille::depuis_cote(cote.parse().ok()?)?,
         };
+        // Les lignes écrites avant les variantes n'ont pas de septième champ : grilles classiques
+        let variante = match champs.next() {
+            None => Variante::Classique,
+            Some(mot) => Variante::depuis_mot(mot)?,
+        };
         if nom.is_empty() || champs.next().is_some() {
             return None;
         }
@@ -126,6 +134,7 @@ impl Entree {
             nom,
             niveau,
             taille,
+            variante,
             score,
             duree_secondes,
             horodatage,
@@ -200,12 +209,19 @@ impl Classement {
             .map_err(|erreur| format!("Impossible d'enregistrer le classement : {}", erreur))
     }
 
-    // Les `nombre` meilleurs scores d'une taille de grille, tous niveaux confondus ou pour un
-    // seul niveau. Les tailles ne se mélangent pas : leurs scores ne se comparent pas.
-    pub fn meilleurs(&self, taille: Taille, niveau: Option<Niveau>, nombre: usize) -> Vec<&Entree> {
+    // Les `nombre` meilleurs scores d'une taille de grille et d'une variante, tous niveaux confondus
+    // ou pour un seul niveau. Les tailles et les variantes ne se mélangent pas : leurs scores ne
+    // se comparent pas.
+    pub fn meilleurs(
+        &self,
+        taille: Taille,
+        variante: Variante,
+        niveau: Option<Niveau>,
+        nombre: usize,
+    ) -> Vec<&Entree> {
         self.entrees
             .iter()
-            .filter(|entree| entree.taille == taille)
+            .filter(|entree| entree.taille == taille && entree.variante == variante)
             .filter(|entree| niveau.is_none_or(|voulu| entree.niveau == voulu))
             .take(nombre)
             .collect()
@@ -238,6 +254,7 @@ mod tests {
             nom: String::from(nom),
             niveau,
             taille,
+            variante: Variante::Classique,
             score,
             duree_secondes: duree,
             horodatage,
@@ -346,7 +363,7 @@ mod tests {
         classement.ajouter(entree("D", Niveau::Moyen, 1000, 200, 0)).unwrap();
 
         let noms: Vec<&str> = classement
-            .meilleurs(Taille::Neuf, None, 10)
+            .meilleurs(Taille::Neuf, Variante::Classique, None, 10)
             .iter()
             .map(|e| e.nom.as_str())
             .collect();
@@ -376,8 +393,8 @@ mod tests {
 
         // La taille est bien conservée : chaque entrée se retrouve dans sa taille
         let recharge = Classement::depuis_fichier(chemin.clone());
-        let neuf: Vec<Entree> = recharge.meilleurs(Taille::Neuf, None, 10).into_iter().cloned().collect();
-        let douze: Vec<Entree> = recharge.meilleurs(Taille::Douze, None, 10).into_iter().cloned().collect();
+        let neuf: Vec<Entree> = recharge.meilleurs(Taille::Neuf, Variante::Classique, None, 10).into_iter().cloned().collect();
+        let douze: Vec<Entree> = recharge.meilleurs(Taille::Douze, Variante::Classique, None, 10).into_iter().cloned().collect();
         assert_eq!(neuf, [premiere]);
         assert_eq!(douze, [seconde]);
         nettoyer(&chemin);
@@ -392,11 +409,48 @@ mod tests {
         classement.ajouter(entree("Moyen", Niveau::Facile, 800, 100, 3)).unwrap();
 
         // Chaque taille a son classement : un score de 16×16 ne passe pas devant un score de 4×4
-        assert_eq!(classement.meilleurs(Taille::Quatre, None, 10).len(), 1);
-        assert_eq!(classement.meilleurs(Taille::Seize, None, 10).len(), 1);
-        assert_eq!(classement.meilleurs(Taille::Neuf, None, 10).len(), 1);
-        assert!(classement.meilleurs(Taille::Six, None, 10).is_empty());
+        assert_eq!(classement.meilleurs(Taille::Quatre, Variante::Classique, None, 10).len(), 1);
+        assert_eq!(classement.meilleurs(Taille::Seize, Variante::Classique, None, 10).len(), 1);
+        assert_eq!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).len(), 1);
+        assert!(classement.meilleurs(Taille::Six, Variante::Classique, None, 10).is_empty());
         nettoyer(&chemin);
+    }
+
+    #[test]
+    fn test_les_variantes_ne_se_melangent_pas() {
+        let chemin = chemin_temporaire();
+        let mut classement = Classement::depuis_fichier(chemin.clone());
+        let mut en_diagonale = entree("Diag", Niveau::Facile, 900, 100, 1);
+        en_diagonale.variante = Variante::Diagonale;
+        classement.ajouter(en_diagonale).unwrap();
+        classement.ajouter(entree("Classique", Niveau::Facile, 800, 100, 2)).unwrap();
+
+        // Chaque variante a son classement, même taille de grille
+        let classique = classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10);
+        assert_eq!(classique.len(), 1);
+        assert_eq!(classique[0].nom, "Classique");
+        let diagonale = classement.meilleurs(Taille::Neuf, Variante::Diagonale, None, 10);
+        assert_eq!(diagonale.len(), 1);
+        assert_eq!(diagonale[0].nom, "Diag");
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Hyper, None, 10).is_empty());
+
+        // Et la variante survit au rechargement
+        let relu = Classement::depuis_fichier(chemin.clone());
+        assert_eq!(relu.meilleurs(Taille::Neuf, Variante::Diagonale, None, 10).len(), 1);
+        nettoyer(&chemin);
+    }
+
+    #[test]
+    fn test_les_anciennes_lignes_sans_variante_sont_classiques() {
+        // Six champs : écrite avant les variantes
+        let entree = Entree::depuis_ligne("Alice\tMoyen\t1500\t120\t1700000000\t9").unwrap();
+        assert_eq!(entree.variante, Variante::Classique);
+        // Sept champs, avec une variante connue ou inconnue
+        let entree = Entree::depuis_ligne("Alice\tMoyen\t1500\t120\t1700000000\t9\thyper").unwrap();
+        assert_eq!(entree.variante, Variante::Hyper);
+        assert!(Entree::depuis_ligne("Alice\tMoyen\t1500\t120\t1700000000\t9\tinconnue").is_none());
+        // Un champ en trop
+        assert!(Entree::depuis_ligne("Alice\tMoyen\t1500\t120\t1700000000\t9\thyper\t1").is_none());
     }
 
     #[test]
@@ -413,10 +467,10 @@ mod tests {
         fs::write(&chemin, contenu).unwrap();
         let classement = Classement::depuis_fichier(chemin.clone());
         // Seule la deuxième ligne est valide, et elle compte pour une grille 9×9
-        assert_eq!(classement.meilleurs(Taille::Neuf, None, 10).len(), 1);
+        assert_eq!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).len(), 1);
         for taille in Taille::TOUTES {
             if taille != Taille::Neuf {
-                assert!(classement.meilleurs(taille, None, 10).is_empty());
+                assert!(classement.meilleurs(taille, Variante::Classique, None, 10).is_empty());
             }
         }
         nettoyer(&chemin);
@@ -428,7 +482,7 @@ mod tests {
         // Le format d'avant les tailles : cinq champs
         fs::write(&chemin, "Lucas\tMoyen\t1500\t300\t1700000000\n").unwrap();
         let classement = Classement::depuis_fichier(chemin.clone());
-        let neuf = classement.meilleurs(Taille::Neuf, None, 10);
+        let neuf = classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10);
         assert_eq!(neuf.len(), 1);
         assert_eq!(neuf[0].nom, "Lucas");
         assert_eq!(neuf[0].score, 1500);
@@ -438,7 +492,7 @@ mod tests {
     #[test]
     fn test_fichier_absent_donne_un_classement_vide() {
         let classement = Classement::depuis_fichier(chemin_temporaire());
-        assert!(classement.meilleurs(Taille::Neuf, None, 10).is_empty());
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).is_empty());
         assert_eq!(classement.dernier_nom(), None);
     }
 
@@ -451,11 +505,11 @@ mod tests {
         classement.ajouter(entree("C", Niveau::Facile, 700, 100, 3)).unwrap();
         classement.ajouter(entree("D", Niveau::Facile, 600, 100, 4)).unwrap();
 
-        let faciles = classement.meilleurs(Taille::Neuf, Some(Niveau::Facile), 10);
+        let faciles = classement.meilleurs(Taille::Neuf, Variante::Classique, Some(Niveau::Facile), 10);
         assert_eq!(faciles.len(), 3);
         assert!(faciles.iter().all(|e| e.niveau == Niveau::Facile));
-        assert_eq!(classement.meilleurs(Taille::Neuf, None, 2).len(), 2);
-        assert!(classement.meilleurs(Taille::Neuf, Some(Niveau::Difficile), 10).is_empty());
+        assert_eq!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 2).len(), 2);
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, Some(Niveau::Difficile), 10).is_empty());
         nettoyer(&chemin);
     }
 
@@ -479,7 +533,7 @@ mod tests {
 
         let resultat = classement.ajouter(entree("A", Niveau::Facile, 900, 100, 1));
         assert!(resultat.is_err());
-        assert!(classement.meilleurs(Taille::Neuf, None, 10).is_empty());
+        assert!(classement.meilleurs(Taille::Neuf, Variante::Classique, None, 10).is_empty());
         nettoyer(&fichier);
     }
 

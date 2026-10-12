@@ -2,6 +2,7 @@
 //! les victoires, les meilleurs temps et les séries.
 
 use crate::grille::{Niveau, Taille};
+use crate::regles::Variante;
 use crate::sauvegarde::{dossier_donnees, ecrire_fichier};
 use std::fs;
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ pub struct PartieJouee {
     pub horodatage: u64,
     pub niveau: Niveau,
     pub taille: Taille,
+    pub variante: Variante,
     pub resultat: Resultat,
     pub duree_secondes: u64,
     pub erreurs: u32,
@@ -50,7 +52,7 @@ impl PartieJouee {
     // Une partie par ligne, les champs séparés par des tabulations
     fn vers_ligne(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.horodatage,
             self.taille.cote(),
             self.niveau.libelle(),
@@ -58,7 +60,8 @@ impl PartieJouee {
             self.duree_secondes,
             self.erreurs,
             self.indices,
-            self.score
+            self.score,
+            self.variante.mot()
         )
     }
 
@@ -73,6 +76,11 @@ impl PartieJouee {
         let erreurs = champs.next()?.parse().ok()?;
         let indices = champs.next()?.parse().ok()?;
         let score = champs.next()?.parse().ok()?;
+        // Les lignes écrites avant les variantes n'ont pas de neuvième champ : grilles classiques
+        let variante = match champs.next() {
+            None => Variante::Classique,
+            Some(mot) => Variante::depuis_mot(mot)?,
+        };
         if champs.next().is_some() {
             return None;
         }
@@ -80,6 +88,7 @@ impl PartieJouee {
             horodatage,
             niveau,
             taille,
+            variante,
             resultat,
             duree_secondes,
             erreurs,
@@ -167,16 +176,17 @@ impl Statistiques {
         let _ = fs::remove_file(self.chemin.with_extension("tmp"));
     }
 
-    // Les chiffres d'une taille de grille, tous niveaux confondus ou pour un seul niveau.
-    // Les tailles ne se mélangent pas : une partie en 4×4 et une en 16×16 ne se comparent pas.
-    pub fn resume(&self, taille: Taille, niveau: Option<Niveau>) -> Resume {
+    // Les chiffres d'une taille de grille et d'une variante, tous niveaux confondus ou pour un seul
+    // niveau. Les tailles et les variantes ne se mélangent pas : une partie en 4×4 et une en 16×16,
+    // ou une partie classique et une en diagonale, ne se comparent pas.
+    pub fn resume(&self, taille: Taille, variante: Variante, niveau: Option<Niveau>) -> Resume {
         let mut resume = Resume::default();
         let mut somme_des_temps = 0;
 
         let concernees = self
             .parties
             .iter()
-            .filter(|partie| partie.taille == taille)
+            .filter(|partie| partie.taille == taille && partie.variante == variante)
             .filter(|partie| niveau.is_none_or(|voulu| partie.niveau == voulu));
         for partie in concernees {
             resume.jouees += 1;
@@ -218,6 +228,7 @@ mod tests {
             horodatage,
             niveau,
             taille,
+            variante: Variante::Classique,
             resultat,
             duree_secondes: duree,
             erreurs: 1,
@@ -253,7 +264,11 @@ mod tests {
         assert!(PartieJouee::depuis_ligne("n'importe quoi").is_none());
         // Un champ en trop, un champ en moins
         assert!(PartieJouee::depuis_ligne(&format!("{}\t1", bonne)).is_none());
-        assert!(PartieJouee::depuis_ligne(bonne.rsplit_once('\t').unwrap().0).is_none());
+        let sans_variante = bonne.rsplit_once('\t').unwrap().0;
+        let sans_variante_ni_score = sans_variante.rsplit_once('\t').unwrap().0;
+        assert!(PartieJouee::depuis_ligne(sans_variante_ni_score).is_none());
+        // Une ligne écrite avant les variantes (sans le dernier champ) reste valide : classique
+        assert!(PartieJouee::depuis_ligne(sans_variante).is_some());
         // Résultat, niveau, taille ou nombre invalides
         assert!(PartieJouee::depuis_ligne(&bonne.replace("victoire", "match nul")).is_none());
         assert!(PartieJouee::depuis_ligne(&bonne.replace("Facile", "Expert")).is_none());
@@ -270,7 +285,7 @@ mod tests {
     #[test]
     fn test_fichier_absent_donne_des_statistiques_vides() {
         let statistiques = Statistiques::depuis_fichier(chemin_temporaire());
-        let resume = statistiques.resume(Taille::Neuf, None);
+        let resume = statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(resume, Resume::default());
         assert_eq!(resume.taux_de_victoire(), None);
     }
@@ -303,7 +318,7 @@ mod tests {
             statistiques.ajouter(en_9x9(resultat, duree, horodatage)).unwrap();
         }
 
-        let resume = statistiques.resume(Taille::Neuf, None);
+        let resume = statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(resume.jouees, 4);
         assert_eq!(resume.victoires, 2);
         assert_eq!(resume.defaites, 1);
@@ -320,7 +335,7 @@ mod tests {
     fn test_sans_victoire_pas_de_temps() {
         let mut statistiques = Statistiques::depuis_fichier(chemin_temporaire());
         statistiques.parties.push(en_9x9(Resultat::Defaite, 10, 1));
-        let resume = statistiques.resume(Taille::Neuf, None);
+        let resume = statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(resume.meilleur_temps, None);
         assert_eq!(resume.temps_moyen, None);
         assert_eq!(resume.meilleur_score, None);
@@ -334,13 +349,13 @@ mod tests {
         statistiques.parties.push(en_9x9(Resultat::Defaite, 10, 2));
         statistiques.parties.push(en_9x9(Resultat::Defaite, 10, 3));
         // 1 sur 3 : 33 %
-        assert_eq!(statistiques.resume(Taille::Neuf, None).taux_de_victoire(), Some(33));
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).taux_de_victoire(), Some(33));
         statistiques.parties.push(en_9x9(Resultat::Victoire, 10, 4));
         statistiques.parties.push(en_9x9(Resultat::Victoire, 10, 5));
         statistiques.parties.push(en_9x9(Resultat::Defaite, 10, 6));
         statistiques.parties.push(en_9x9(Resultat::Victoire, 10, 7));
         // 4 sur 7 : 57,1 %
-        assert_eq!(statistiques.resume(Taille::Neuf, None).taux_de_victoire(), Some(57));
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).taux_de_victoire(), Some(57));
     }
 
     #[test]
@@ -354,7 +369,7 @@ mod tests {
         {
             statistiques.parties.push(en_9x9(resultat, 10, i as u64));
         }
-        let resume = statistiques.resume(Taille::Neuf, None);
+        let resume = statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(resume.meilleure_serie, 3);
         assert_eq!(resume.serie_en_cours, 1);
     }
@@ -366,19 +381,19 @@ mod tests {
         statistiques.parties.push(partie(Taille::Neuf, Niveau::Difficile, Resultat::Defaite, 200, 2));
         statistiques.parties.push(partie(Taille::Seize, Niveau::Facile, Resultat::Victoire, 900, 3));
 
-        let neuf = statistiques.resume(Taille::Neuf, None);
+        let neuf = statistiques.resume(Taille::Neuf, Variante::Classique, None);
         assert_eq!(neuf.jouees, 2);
         assert_eq!(neuf.meilleur_temps, Some(100));
 
-        let neuf_difficile = statistiques.resume(Taille::Neuf, Some(Niveau::Difficile));
+        let neuf_difficile = statistiques.resume(Taille::Neuf, Variante::Classique, Some(Niveau::Difficile));
         assert_eq!(neuf_difficile.jouees, 1);
         assert_eq!(neuf_difficile.victoires, 0);
 
-        let seize = statistiques.resume(Taille::Seize, None);
+        let seize = statistiques.resume(Taille::Seize, Variante::Classique, None);
         assert_eq!(seize.jouees, 1);
         assert_eq!(seize.meilleur_temps, Some(900));
 
-        assert_eq!(statistiques.resume(Taille::Six, None).jouees, 0);
+        assert_eq!(statistiques.resume(Taille::Six, Variante::Classique, None).jouees, 0);
     }
 
     #[test]
@@ -391,7 +406,7 @@ mod tests {
         ];
         fs::write(&chemin, lignes.join("\n")).unwrap();
         let statistiques = Statistiques::depuis_fichier(chemin.clone());
-        assert_eq!(statistiques.resume(Taille::Neuf, None).serie_en_cours, 0);
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).serie_en_cours, 0);
         nettoyer(&chemin);
     }
 
@@ -403,7 +418,31 @@ mod tests {
         let mut statistiques = Statistiques::depuis_fichier(fichier.join("statistiques.txt"));
 
         assert!(statistiques.ajouter(en_9x9(Resultat::Victoire, 10, 1)).is_err());
-        assert_eq!(statistiques.resume(Taille::Neuf, None).jouees, 0);
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).jouees, 0);
         nettoyer(&fichier);
+    }
+
+    #[test]
+    fn test_les_variantes_ne_se_melangent_pas() {
+        let mut statistiques = Statistiques::depuis_fichier(chemin_temporaire());
+        let mut en_diagonale = en_9x9(Resultat::Victoire, 50, 1);
+        en_diagonale.variante = Variante::Diagonale;
+        statistiques.parties.push(en_diagonale);
+        statistiques.parties.push(en_9x9(Resultat::Defaite, 80, 2));
+
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).jouees, 1);
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::Classique, None).victoires, 0);
+        let diagonale = statistiques.resume(Taille::Neuf, Variante::Diagonale, None);
+        assert_eq!((diagonale.jouees, diagonale.victoires), (1, 1));
+        assert_eq!(statistiques.resume(Taille::Neuf, Variante::AntiCavalier, None).jouees, 0);
+    }
+
+    #[test]
+    fn test_la_variante_survit_a_l_aller_retour_d_une_ligne() {
+        for variante in Variante::TOUTES {
+            let mut origine = en_9x9(Resultat::Victoire, 100, 5);
+            origine.variante = variante;
+            assert_eq!(PartieJouee::depuis_ligne(&origine.vers_ligne()), Some(origine));
+        }
     }
 }

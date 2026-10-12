@@ -6,9 +6,12 @@
 //! subtile. La technique la plus difficile qu'il a fallu employer pour finir une grille mesure sa
 //! vraie difficulté. Et comme chaque déduction est sûre, une grille résolue ainsi n'a forcément
 //! qu'une solution.
+//!
+//! Les techniques raisonnent sur les zones de `Regles` : ce sont donc aussi celles des variantes
+//! (les diagonales et les fenêtres sont des zones comme les autres).
 
 use crate::grille::Niveau;
-use crate::solveur::Solveur;
+use crate::regles::{Regles, Zone};
 
 // Le bit qui représente un chiffre : le bit 0 pour le 1, le bit 1 pour le 2, etc.
 fn bit(valeur: u8) -> u16 {
@@ -84,121 +87,6 @@ pub fn technique_max(niveau: Niveau) -> Technique {
     }
 }
 
-// Une zone de la grille : ligne, colonne ou bloc (numérotés à partir de 0)
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Zone {
-    Ligne(usize),
-    Colonne(usize),
-    Bloc(usize),
-}
-
-impl Zone {
-    // « dans la ligne 3 »
-    fn dans(self) -> String {
-        match self {
-            Zone::Ligne(i) => format!("dans la ligne {}", i + 1),
-            Zone::Colonne(i) => format!("dans la colonne {}", i + 1),
-            Zone::Bloc(i) => format!("dans le bloc {}", i + 1),
-        }
-    }
-
-    // « de la ligne 3 »
-    fn de(self) -> String {
-        match self {
-            Zone::Ligne(i) => format!("de la ligne {}", i + 1),
-            Zone::Colonne(i) => format!("de la colonne {}", i + 1),
-            Zone::Bloc(i) => format!("du bloc {}", i + 1),
-        }
-    }
-}
-
-// La forme de la grille : ses zones et les liens entre les cases. Elle ne dépend que de la taille,
-// on la calcule une fois et on la partage entre toutes les résolutions.
-pub struct Geometrie {
-    cote: usize,
-    // La forme des blocs : `bloc_h` lignes sur `bloc_l` colonnes
-    bloc_h: usize,
-    bloc_l: usize,
-    // Les 3 × cote zones : les lignes (de 0 à cote), les colonnes, puis les blocs.
-    // Chaque zone liste ses cases (indice = ligne × cote + col) ; une ligne va de gauche à droite,
-    // une colonne de haut en bas.
-    unites: Vec<Vec<usize>>,
-    // Pour chaque case, les autres cases de sa ligne, de sa colonne et de son bloc
-    voisines: Vec<Vec<usize>>,
-    // contient[zone][case] : true si la zone contient la case
-    contient: Vec<Vec<bool>>,
-    // Les couples (zone, zone qui la croise) : un bloc avec chacune de ses lignes et colonnes,
-    // dans les deux sens
-    croisements: Vec<(usize, usize)>,
-}
-
-impl Geometrie {
-    pub fn new(cote: usize, bloc_h: usize, bloc_l: usize) -> Geometrie {
-        let cases = cote * cote;
-        let blocs_par_ligne = cote / bloc_l;
-        let bloc_de = |ligne: usize, col: usize| (ligne / bloc_h) * blocs_par_ligne + col / bloc_l;
-
-        let mut unites = vec![Vec::with_capacity(cote); 3 * cote];
-        for ligne in 0..cote {
-            for col in 0..cote {
-                let case = ligne * cote + col;
-                unites[ligne].push(case);
-                unites[cote + col].push(case);
-                unites[2 * cote + bloc_de(ligne, col)].push(case);
-            }
-        }
-
-        let mut contient = vec![vec![false; cases]; 3 * cote];
-        for (zone, liste) in unites.iter().enumerate() {
-            for &case in liste {
-                contient[zone][case] = true;
-            }
-        }
-
-        let voisines = (0..cases)
-            .map(|case| {
-                let (ligne, col) = (case / cote, case % cote);
-                let zones = [ligne, cote + col, 2 * cote + bloc_de(ligne, col)];
-                (0..cases)
-                    .filter(|&autre| autre != case && zones.iter().any(|&zone| contient[zone][autre]))
-                    .collect()
-            })
-            .collect();
-
-        let mut croisements = Vec::new();
-        for bloc in 0..cote {
-            let zone_bloc = 2 * cote + bloc;
-            let (premiere_ligne, premiere_col) =
-                ((bloc / blocs_par_ligne) * bloc_h, (bloc % blocs_par_ligne) * bloc_l);
-            for ligne in premiere_ligne..premiere_ligne + bloc_h {
-                croisements.push((zone_bloc, ligne));
-                croisements.push((ligne, zone_bloc));
-            }
-            for col in premiere_col..premiere_col + bloc_l {
-                croisements.push((zone_bloc, cote + col));
-                croisements.push((cote + col, zone_bloc));
-            }
-        }
-
-        Geometrie { cote, bloc_h, bloc_l, unites, voisines, contient, croisements }
-    }
-
-    fn zone(&self, indice: usize) -> Zone {
-        if indice < self.cote {
-            Zone::Ligne(indice)
-        } else if indice < 2 * self.cote {
-            Zone::Colonne(indice - self.cote)
-        } else {
-            Zone::Bloc(indice - 2 * self.cote)
-        }
-    }
-
-    // « ligne 3, colonne 4 »
-    fn case_texte(&self, case: usize) -> String {
-        format!("ligne {}, colonne {}", case / self.cote + 1, case % self.cote + 1)
-    }
-}
-
 // Une déduction : ce que la technique a trouvé et ce qu'elle change
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pas {
@@ -231,7 +119,7 @@ fn chiffres_texte(masque: u16) -> String {
 
 impl Pas {
     // Explique la déduction à un joueur
-    pub fn explication(&self, geometrie: &Geometrie) -> String {
+    pub fn explication(&self, geometrie: &Regles) -> String {
         let cases: Vec<String> = self
             .cases
             .iter()
@@ -281,7 +169,7 @@ impl Pas {
                     Some(Zone::Ligne(_)) => ("lignes", "colonnes"),
                     _ => ("colonnes", "lignes"),
                 };
-                let cote = geometrie.cote;
+                let cote = geometrie.cote();
                 let mut croisees: Vec<usize> = self
                     .cases
                     .iter()
@@ -305,7 +193,7 @@ impl Pas {
 
 // L'état d'une résolution : les chiffres posés et, pour chaque case, les chiffres encore possibles
 pub struct Logique<'a> {
-    geometrie: &'a Geometrie,
+    geometrie: &'a Regles,
     cases: Vec<u8>,
     // Les chiffres encore possibles dans chaque case, en bits. Une case remplie n'a que le sien.
     candidats: Vec<u16>,
@@ -314,19 +202,24 @@ pub struct Logique<'a> {
 impl<'a> Logique<'a> {
     // Prépare la résolution d'une grille (0 = case vide). Renvoie None si elle contient un doublon
     // ou un chiffre hors limites.
-    pub fn new(geometrie: &'a Geometrie, cases: &[u8]) -> Option<Logique<'a>> {
-        let cote = geometrie.cote;
-        // Le solveur à retour sur trace sert ici à refuser les grilles incohérentes
+    pub fn new(geometrie: &'a Regles, cases: &[u8]) -> Option<Logique<'a>> {
+        let cote = geometrie.cote();
         if cases.len() != cote * cote || cases.iter().any(|&valeur| valeur as usize > cote) {
             return None;
         }
-        Solveur::new(cote, geometrie.bloc_h, geometrie.bloc_l, cases)?;
+        // Aucun chiffre ne doit être répété dans les cases qui se l'interdisent
+        let doublon = cases.iter().enumerate().any(|(case, &valeur)| {
+            valeur != 0 && geometrie.voisines[case].iter().any(|&autre| cases[autre] == valeur)
+        });
+        if doublon {
+            return None;
+        }
         Some(Logique::depuis_cases_valides(geometrie, cases))
     }
 
     // Comme `new`, pour une grille dont on sait déjà qu'elle est cohérente (génération)
-    pub fn depuis_cases_valides(geometrie: &'a Geometrie, cases: &[u8]) -> Logique<'a> {
-        let tous = ((1u32 << geometrie.cote) - 1) as u16;
+    pub fn depuis_cases_valides(geometrie: &'a Regles, cases: &[u8]) -> Logique<'a> {
+        let tous = ((1u32 << geometrie.cote()) - 1) as u16;
         let mut logique = Logique {
             geometrie,
             cases: cases.to_vec(),
@@ -424,7 +317,7 @@ impl<'a> Logique<'a> {
 
     // Un chiffre qui n'a qu'une case possible dans une zone
     fn chiffre_unique(&self) -> Option<Pas> {
-        for (indice, unite) in self.geometrie.unites.iter().enumerate() {
+        for (indice, unite) in self.geometrie.zones.iter().enumerate() {
             // `une` : les chiffres possibles dans au moins une case ; `deux` : dans au moins deux
             let (mut une, mut deux, mut places) = (0u16, 0u16, 0u16);
             for &case in unite {
@@ -458,7 +351,7 @@ impl<'a> Logique<'a> {
 
     // Les cases vides d'une zone où un chiffre reste possible
     fn cases_possibles(&self, unite: usize, masque: u16) -> Vec<usize> {
-        self.geometrie.unites[unite]
+        self.geometrie.zones[unite]
             .iter()
             .copied()
             .filter(|&case| self.cases[case] == 0 && self.candidats[case] & masque != 0)
@@ -470,7 +363,7 @@ impl<'a> Logique<'a> {
     fn intersection(&self) -> Option<Pas> {
         let geometrie = self.geometrie;
         for &(a, b) in &geometrie.croisements {
-            for valeur in 1..=geometrie.cote as u8 {
+            for valeur in 1..=geometrie.cote() as u8 {
                 let masque = bit(valeur);
                 let dans_a = self.cases_possibles(a, masque);
                 if dans_a.len() < 2 || !dans_a.iter().all(|&case| geometrie.contient[b][case]) {
@@ -502,7 +395,7 @@ impl<'a> Logique<'a> {
     // sont impossibles dans les autres cases de la zone (k = 2 : paire nue, k = 3 : triplet nu)
     fn sous_ensemble_nu(&self, k: usize) -> Option<Pas> {
         let technique = if k == 2 { Technique::PaireNue } else { Technique::TripletNu };
-        for (indice, unite) in self.geometrie.unites.iter().enumerate() {
+        for (indice, unite) in self.geometrie.zones.iter().enumerate() {
             // Seules comptent les cases vides qui ont entre 2 et k chiffres possibles
             let candidates: Vec<usize> = unite
                 .iter()
@@ -539,7 +432,7 @@ impl<'a> Logique<'a> {
             if union.count_ones() as usize != k {
                 return None;
             }
-            let eliminations: Vec<(usize, u16)> = self.geometrie.unites[unite]
+            let eliminations: Vec<(usize, u16)> = self.geometrie.zones[unite]
                 .iter()
                 .copied()
                 .filter(|case| !choisies.contains(case) && self.cases[*case] == 0)
@@ -581,8 +474,8 @@ impl<'a> Logique<'a> {
     // Deux chiffres qui n'ont que les deux mêmes cases dans une zone : ces deux cases ne peuvent
     // contenir que ces deux chiffres
     fn paire_cachee(&self) -> Option<Pas> {
-        let cote = self.geometrie.cote;
-        for (indice, unite) in self.geometrie.unites.iter().enumerate() {
+        let cote = self.geometrie.cote();
+        for (indice, unite) in self.geometrie.zones.iter().enumerate() {
             // Pour chaque chiffre, ses places dans la zone (un bit par case de la zone)
             let mut places = [0u16; 16];
             let mut posés = 0u16;
@@ -640,7 +533,7 @@ impl<'a> Logique<'a> {
     // autres cases de ces colonnes. Et de même en échangeant lignes et colonnes.
     fn x_wing(&self) -> Option<Pas> {
         let geometrie = self.geometrie;
-        let cote = geometrie.cote;
+        let cote = geometrie.cote();
         // (zones de base, zones qui les croisent) : les lignes puis les colonnes
         for (base, croisees) in [(0, cote), (cote, 0)] {
             for valeur in 1..=cote as u8 {
@@ -648,7 +541,7 @@ impl<'a> Logique<'a> {
                 // Les zones de base où le chiffre n'a que deux places, avec ces places
                 let mut paires: Vec<(usize, u16)> = Vec::new();
                 for rang in 0..cote {
-                    let places = geometrie.unites[base + rang]
+                    let places = geometrie.zones[base + rang]
                         .iter()
                         .enumerate()
                         .filter(|&(_, &case)| self.cases[case] == 0 && self.candidats[case] & masque != 0)
@@ -669,7 +562,7 @@ impl<'a> Logique<'a> {
                             if places >> position & 1 == 0 {
                                 continue;
                             }
-                            for &case in &geometrie.unites[croisees + position] {
+                            for &case in &geometrie.zones[croisees + position] {
                                 if geometrie.contient[zone_a][case] || geometrie.contient[zone_b][case] {
                                     coins.push(case);
                                 } else if self.cases[case] == 0 && self.candidats[case] & masque != 0 {
@@ -700,9 +593,11 @@ impl<'a> Logique<'a> {
 mod tests {
     use super::*;
     use crate::grille::{Grille, Taille};
+    use crate::solveur::Solveur;
+    use std::sync::Arc;
 
-    fn geometrie(taille: Taille) -> Geometrie {
-        Geometrie::new(taille.cote(), taille.bloc_h(), taille.bloc_l())
+    fn geometrie(taille: Taille) -> Arc<Regles> {
+        Regles::classique(taille)
     }
 
     // La grille d'entraînement : une grille de journal facile
@@ -715,43 +610,8 @@ mod tests {
     }
 
     // Une résolution sur une grille vide 9×9, dont on fixe à la main les candidats
-    fn vide_9x9(geometrie: &Geometrie) -> Logique<'_> {
+    fn vide_9x9(geometrie: &Regles) -> Logique<'_> {
         Logique::depuis_cases_valides(geometrie, &[0u8; 81])
-    }
-
-    #[test]
-    fn test_la_geometrie_9x9() {
-        let g = geometrie(Taille::Neuf);
-        assert_eq!(g.unites.len(), 27);
-        assert!(g.unites.iter().all(|unite| unite.len() == 9));
-        // Chaque case a 8 + 8 + 4 voisines (le bloc partage 4 cases hors ligne et colonne)
-        assert!(g.voisines.iter().all(|voisines| voisines.len() == 20));
-        // 9 blocs × (3 lignes + 3 colonnes) × 2 sens
-        assert_eq!(g.croisements.len(), 108);
-        // Le bloc 4 (au centre) contient la case (4, 4)
-        assert!(g.contient[2 * 9 + 4][4 * 9 + 4]);
-        assert_eq!(g.zone(0), Zone::Ligne(0));
-        assert_eq!(g.zone(9), Zone::Colonne(0));
-        assert_eq!(g.zone(18), Zone::Bloc(0));
-    }
-
-    #[test]
-    fn test_la_geometrie_avec_des_blocs_rectangulaires() {
-        // 6×6 : des blocs de 2 lignes sur 3 colonnes
-        let g = geometrie(Taille::Six);
-        assert_eq!(g.unites.len(), 18);
-        assert!(g.unites.iter().all(|unite| unite.len() == 6));
-        // Le bloc 1 (en haut à droite) contient les cases des lignes 0 et 1, colonnes 3 à 5
-        assert_eq!(g.unites[12 + 1], vec![3, 4, 5, 9, 10, 11]);
-        // 6 blocs × (2 lignes + 3 colonnes) × 2 sens
-        assert_eq!(g.croisements.len(), 60);
-        // 5 + 5 + 2 voisines
-        assert!(g.voisines.iter().all(|voisines| voisines.len() == 12));
-
-        // 12×12 : des blocs de 3 lignes sur 4 colonnes
-        let g = geometrie(Taille::Douze);
-        assert_eq!(g.unites[24 + 1].len(), 12);
-        assert_eq!(g.croisements.len(), 12 * (3 + 4) * 2);
     }
 
     #[test]
@@ -1074,13 +934,7 @@ mod tests {
                 let grille = Grille::generer(taille, String::from("T"), taille.cases() / 2);
                 let mut logique = Logique::new(&g, grille.cases()).unwrap();
                 if logique.resoudre(Technique::XWing).is_some() {
-                    let mut solveur = Solveur::new(
-                        taille.cote(),
-                        taille.bloc_h(),
-                        taille.bloc_l(),
-                        grille.cases(),
-                    )
-                    .unwrap();
+                    let mut solveur = Solveur::new(&g, grille.cases()).unwrap();
                     assert_eq!(solveur.compter(2), 1);
                 }
             }
