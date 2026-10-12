@@ -3,7 +3,7 @@
 use crate::classement::{
     calculer_score, maintenant, nettoyer_nom, penalite_erreur, penalite_indice, Classement, Entree,
 };
-use crate::grille::{Grille, Niveau, Origine, Taille};
+use crate::grille::{Grille, Indice, Niveau, Origine, Taille};
 use crate::reglages::{Reglages, Theme};
 use crate::resolveur::Resolveur;
 use crate::sauvegarde::{PartieSauvee, Sauvegarde};
@@ -530,17 +530,18 @@ impl Partie {
             return;
         }
         match self.grille.indice() {
-            Some((ligne, col, valeur)) => {
+            Some(Indice { ligne, col, valeur, explication, .. }) => {
                 self.indices += 1;
                 self.modifiee = true;
                 self.sons.push(Son::Indice);
                 self.noter_coup(ligne, col, 0, valeur);
                 self.selection = Some((ligne, col));
                 self.message = format!(
-                    "Indice : {} en ligne {}, colonne {}",
+                    "Indice : {} en ligne {}, colonne {}. {}",
                     valeur,
                     ligne + 1,
-                    col + 1
+                    col + 1,
+                    explication
                 );
                 if self.grille.est_terminee() {
                     self.terminer(Fin::Victoire);

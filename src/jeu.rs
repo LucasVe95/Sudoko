@@ -93,9 +93,13 @@ pub fn jouer(mut grille: Grille) {
                 break;
             }
             Ok(Commande::Indice) => match grille.indice() {
-                Some((ligne, col, valeur)) => {
-                    println!("Indice : {} en ligne {}, colonne {}", valeur, ligne + 1, col + 1)
-                }
+                Some(indice) => println!(
+                    "Indice : {} en ligne {}, colonne {}. {}",
+                    indice.valeur,
+                    indice.ligne + 1,
+                    indice.col + 1,
+                    indice.explication
+                ),
                 None => println!(
                     "Pas d'indice possible : vos coups bloquent la grille, effacez-en quelques-uns"
                 ),

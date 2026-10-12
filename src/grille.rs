@@ -1,7 +1,9 @@
 //! La grille de Sudoku : règles, chargement, résolution et génération, pour plusieurs tailles.
 
 use crate::solveur::Solveur;
+use crate::technique::{technique_max, Geometrie, Logique, Technique};
 use rand::seq::{IndexedRandom, SliceRandom};
+use std::time::{Duration, Instant};
 
 // La taille d'une grille : son côté, et la forme des blocs qui la découpent.
 // Les blocs ne sont pas toujours carrés : en 6×6 ils font 2 lignes sur 3 colonnes.
@@ -75,7 +77,7 @@ impl Taille {
 }
 
 // Niveau de difficulté d'une grille générée
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Niveau {
     Facile,
     Moyen,
@@ -100,8 +102,9 @@ impl Niveau {
             .find(|niveau| niveau.libelle() == libelle)
     }
 
-    // Plus on retire de cases, plus la grille est difficile : 43 %, 56 % ou 68 % des cases.
-    // En 9×9, cela donne 35, 45 et 55 cases vides.
+    // Le nombre de cases vides visé : 43 %, 56 % ou 68 % des cases. En 9×9, cela donne 35, 45 et 55.
+    // Le niveau Facile s'arrête là ; pour les deux autres, c'est un minimum : on retire encore
+    // des cases tant que la grille ne demande pas les techniques du niveau (voir `generer_niveau`).
     fn cases_a_retirer(self, taille: Taille) -> usize {
         let pourcentage = match self {
             Niveau::Facile => 43,
@@ -410,10 +413,12 @@ impl Grille {
         self.cases.iter().all(|&case| case != 0)
     }
 
-    // Remplit une case vide choisie au hasard avec la bonne valeur.
-    // Renvoie (ligne, col, valeur), ou None s'il n'y a rien à révéler : grille déjà pleine,
-    // ou coups du joueur qui mènent à une impasse (la grille n'est alors pas modifiée).
-    pub fn indice(&mut self) -> Option<(usize, usize, u8)> {
+    // Remplit une case vide avec la bonne valeur, et explique pourquoi c'est la bonne.
+    // On choisit la case que la technique de déduction la plus simple permet de trouver
+    // (voir technique.rs) ; si aucune déduction n'y mène, une case vide au hasard.
+    // Renvoie None s'il n'y a rien à révéler : grille déjà pleine, ou coups du joueur qui mènent
+    // à une impasse (la grille n'est alors pas modifiée).
+    pub fn indice(&mut self) -> Option<Indice> {
         // La solution est connue pour les grilles générées et pour la grille d'entraînement.
         // Sinon, on résout une copie : la grille du joueur reste intacte si la résolution échoue.
         let solution = match &self.solution {
@@ -440,12 +445,57 @@ impl Grille {
         let vides: Vec<usize> = (0..self.cases.len())
             .filter(|&position| self.cases[position] == 0)
             .collect();
-        let &position = vides.choose(&mut rand::rng())?;
+        let (position, explication) = match self.indice_par_deduction(&solution) {
+            Some(trouve) => trouve,
+            None => {
+                let &position = vides.choose(&mut rand::rng())?;
+                let explication = String::from(
+                    "Aucune technique de déduction ne mène à cette case : c'est le chiffre de la solution.",
+                );
+                (position, explication)
+            }
+        };
 
         let cote = self.taille.cote();
         let valeur = solution[position];
         self.cases[position] = valeur;
-        Some((position / cote, position % cote, valeur))
+        Some(Indice {
+            ligne: position / cote,
+            col: position % cote,
+            valeur,
+            explication,
+        })
+    }
+
+    // Cherche la prochaine case que la déduction permet de remplir, en partant des chiffres posés.
+    // Renvoie (la case, l'explication). Les techniques qui ne font que retirer des possibilités
+    // sont enchaînées jusqu'à ce qu'une case se remplisse.
+    fn indice_par_deduction(&self, solution: &[u8]) -> Option<(usize, String)> {
+        let geometrie = Geometrie::new(self.taille.cote(), self.taille.bloc_h(), self.taille.bloc_l());
+        let mut logique = Logique::new(&geometrie, &self.cases)?;
+        let mut preparation: Vec<Technique> = Vec::new();
+        while let Some(pas) = logique.prochain_pas(Technique::XWing) {
+            if let Some((case, valeur)) = pas.placement {
+                // Une déduction est sûre : si elle contredit la solution, mieux vaut ne rien en dire
+                if solution[case] != valeur {
+                    return None;
+                }
+                let mut explication = pas.explication(&geometrie);
+                if !preparation.is_empty() {
+                    let noms: Vec<&str> = preparation.iter().map(|technique| technique.libelle()).collect();
+                    explication += &format!(
+                        " Auparavant, il faut retirer des possibilités avec : {}.",
+                        noms.join(", ")
+                    );
+                }
+                return Some((case, explication));
+            }
+            if !preparation.contains(&pas.technique) {
+                preparation.push(pas.technique);
+            }
+            logique.appliquer(&pas);
+        }
+        None
     }
 
     // Prépare le solveur sur la grille actuelle. None si elle contient un doublon.
@@ -505,6 +555,7 @@ impl Grille {
     // true si la grille a exactement une solution, prouvé dans la limite d'un budget.
     // Si la preuve est trop longue, on répond false : la génération garde alors la case
     // au lieu de risquer une attente interminable.
+    #[cfg(test)]
     fn est_unique_prouve(&self) -> bool {
         let Some(solveur) = self.solveur() else {
             return false;
@@ -514,18 +565,97 @@ impl Grille {
         !solveur.a_abandonne() && solutions == 1
     }
 
-    // Génère une grille du niveau et de la taille demandés
+    // Génère une grille du niveau et de la taille demandés.
+    //
+    // La difficulté se mesure aux techniques de déduction qu'il faut employer pour finir la grille
+    // (voir technique.rs), pas au nombre de cases vides :
+    // - Facile : des cases uniques et des chiffres uniques seulement ;
+    // - Moyen : il faut aussi des intersections ou des paires nues ;
+    // - Difficile : il faut en plus des paires cachées, des triplets nus ou un X-Wing.
+    // Dans tous les cas, la grille se finit sans jamais deviner : sa solution est unique.
+    //
+    // Dans les petites grilles (4×4 et 6×6), les techniques difficiles n'ont presque pas de place :
+    // le niveau y dépend seulement du nombre de cases vides (la grille reste résoluble par déduction,
+    // avec les techniques du niveau). Dans les autres, si aucun essai ne demande les techniques du
+    // niveau au bout de quelques secondes, on garde la grille la plus difficile trouvée.
     pub fn generer_niveau(niveau: Niveau, taille: Taille) -> Grille {
         let nom = format!(
             "Partie {} {}",
             niveau.libelle().to_lowercase(),
             taille.libelle()
         );
-        Grille::generer(taille, nom, niveau.cases_a_retirer(taille))
+        let geometrie = Geometrie::new(taille.cote(), taille.bloc_h(), taille.bloc_l());
+        let mut rng = rand::rng();
+        let debut = Instant::now();
+
+        let mut meilleur: Option<Essai> = None;
+        for _ in 0..ESSAIS_MAX {
+            let essai = Grille::essayer_niveau(&geometrie, taille, niveau, &mut rng);
+            let conforme = essai.conforme;
+            if meilleur.as_ref().is_none_or(|actuel| essai.score() > actuel.score()) {
+                meilleur = Some(essai);
+            }
+            if conforme || debut.elapsed() > TEMPS_MAX_GENERATION {
+                break;
+            }
+        }
+        let essai = meilleur.expect("au moins un essai a été fait");
+
+        // Les chiffres restants forment la grille de départ : on les verrouille
+        let mut grille = Grille::nouvelle(taille, nom);
+        grille.fixes = essai.cases.iter().map(|&valeur| valeur != 0).collect();
+        grille.cases = essai.cases;
+        grille.solution = Some(essai.solution);
+        grille
+    }
+
+    // Un essai de génération : on part d'une grille complète tirée au hasard et on retire des cases
+    // une à une, dans un ordre aléatoire. On ne garde un retrait que si la grille se résout encore
+    // par déduction avec les techniques du niveau, ce qui prouve aussi que sa solution est unique.
+    // On s'arrête quand le nombre de cases vides visé est atteint et que la grille demande bien
+    // les techniques du niveau (sauf en 4×4 et 6×6, où le nombre de cases suffit), ou quand plus
+    // aucune case ne peut être retirée.
+    fn essayer_niveau(
+        geometrie: &Geometrie,
+        taille: Taille,
+        niveau: Niveau,
+        rng: &mut impl rand::Rng,
+    ) -> Essai {
+        let mut complete = Grille::nouvelle(taille, String::new());
+        complete.remplir_au_hasard(rng);
+        let solution = complete.cases;
+        let mut cases = solution.clone();
+
+        let mut positions: Vec<usize> = (0..taille.cases()).collect();
+        positions.shuffle(&mut *rng);
+
+        let cible = niveau.cases_a_retirer(taille);
+        let permise = technique_max(niveau);
+        let exige_les_techniques = taille.cote() >= 9;
+        let (mut retirees, mut plus_difficile) = (0, Technique::CaseUnique);
+        for position in positions {
+            if retirees >= cible && (!exige_les_techniques || plus_difficile.niveau() >= niveau) {
+                break;
+            }
+            let valeur = cases[position];
+            cases[position] = 0;
+            match Logique::depuis_cases_valides(geometrie, &cases).resoudre(permise) {
+                Some(technique) => {
+                    retirees += 1;
+                    plus_difficile = technique;
+                }
+                None => cases[position] = valeur,
+            }
+        }
+        let conforme =
+            retirees >= cible && (!exige_les_techniques || plus_difficile.niveau() >= niveau);
+        Essai { cases, solution, retirees, plus_difficile, conforme }
     }
 
     // Génère une grille à solution unique en retirant `a_retirer` cases (au plus) d'une
-    // grille complète tirée au hasard. Plus on en retire, plus la grille est difficile.
+    // grille complète tirée au hasard, sans se soucier des techniques qu'elle demande.
+    // Les tests s'en servent pour obtenir des grilles de toutes sortes.
+    #[cfg(test)]
     pub fn generer(taille: Taille, nom: String, a_retirer: usize) -> Grille {
         let mut rng = rand::rng();
         let mut grille = Grille::nouvelle(taille, nom);
@@ -562,9 +692,43 @@ impl Grille {
     }
 }
 
+// Un indice : la case remplie, son chiffre, et pourquoi c'est le bon
+pub struct Indice {
+    pub ligne: usize,
+    pub col: usize,
+    pub valeur: u8,
+    // L'explication, qui nomme la technique de déduction employée
+    pub explication: String,
+}
+
+// Un essai de génération d'une grille de niveau donné
+struct Essai {
+    cases: Vec<u8>,
+    solution: Vec<u8>,
+    retirees: usize,
+    // La technique la plus difficile qu'il faut pour finir la grille
+    plus_difficile: Technique,
+    // true si la grille a les cases vides visées et demande bien les techniques du niveau
+    conforme: bool,
+}
+
+impl Essai {
+    // Pour choisir le meilleur essai : d'abord un essai conforme, puis le plus difficile,
+    // puis celui qui a le plus de cases vides
+    fn score(&self) -> (bool, Technique, usize) {
+        (self.conforme, self.plus_difficile, self.retirees)
+    }
+}
+
+// Le nombre d'essais et le temps au plus qu'on consacre à trouver une grille qui demande les
+// techniques du niveau, avant de garder la meilleure trouvée
+const ESSAIS_MAX: usize = 200;
+const TEMPS_MAX_GENERATION: Duration = Duration::from_secs(3);
+
 // Le nombre maximal d'étapes de recherche pour remplir une grille au hasard (un essai),
 // et pour prouver qu'une grille n'a qu'une solution. Au-delà, on abandonne.
 const BUDGET_REMPLISSAGE: u64 = 20_000;
+#[cfg(test)]
 const BUDGET_UNICITE: u64 = 5_000;
 
 // Grille de départ : 81 chiffres, 0 = case vide
@@ -791,11 +955,106 @@ mod tests {
         let mut g = depart();
         let solution = Grille::depuis_texte(String::from("Test"), SOLUTION).unwrap();
 
-        let (ligne, col, valeur) = g.indice().unwrap();
+        let Indice { ligne, col, valeur, .. } = g.indice().unwrap();
         assert_eq!(g.valeur(ligne, col), valeur);
         assert_eq!(valeur, solution.valeur(ligne, col));
         // 51 cases vides au départ, une de moins maintenant
         assert_eq!(compter_vides(&g), 50);
+    }
+
+    #[test]
+    fn test_l_indice_explique_la_technique() {
+        let mut g = depart();
+        let Indice { ligne, col, valeur, explication } = g.indice().unwrap();
+        // La grille de journal est facile : une case unique ou un chiffre unique
+        assert!(
+            explication.starts_with("Case unique") || explication.starts_with("Chiffre unique"),
+            "{}",
+            explication
+        );
+        // L'explication donne la case, en comptant à partir de 1
+        assert!(
+            explication.contains(&format!("ligne {}, colonne {}", ligne + 1, col + 1)),
+            "{}",
+            explication
+        );
+        assert!(explication.contains(&valeur.to_string()), "{}", explication);
+    }
+
+    #[test]
+    fn test_chaque_indice_donne_la_bonne_valeur_jusqu_a_la_fin_de_la_grille() {
+        for (niveau, taille) in [
+            (Niveau::Facile, Taille::Six),
+            (Niveau::Moyen, Taille::Six),
+            (Niveau::Moyen, Taille::Neuf),
+            (Niveau::Moyen, Taille::Douze),
+        ] {
+            let mut g = Grille::generer_niveau(niveau, taille);
+            let solution = g.solution().unwrap().to_vec();
+            let mut nombre = 0;
+            while let Some(indice) = g.indice() {
+                assert_eq!(indice.valeur, solution[indice.ligne * taille.cote() + indice.col]);
+                assert!(!indice.explication.is_empty());
+                nombre += 1;
+            }
+            assert!(g.est_terminee(), "{} {}", niveau.libelle(), taille.libelle());
+            assert!(nombre > 0);
+        }
+    }
+
+    #[test]
+    fn test_un_indice_dit_quand_il_faut_retirer_des_possibilites() {
+        // Une grille qui demande une intersection ou une paire nue : au moins un des indices
+        // successifs doit d'abord retirer des possibilités
+        let mut trouve = false;
+        for _ in 0..4 {
+            let mut g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf);
+            while let Some(indice) = g.indice() {
+                if indice.explication.contains("Auparavant, il faut retirer des possibilités avec") {
+                    trouve = true;
+                }
+            }
+            if trouve {
+                break;
+            }
+        }
+        assert!(trouve, "aucun indice n'a mentionné de technique d'élimination");
+    }
+
+    // Une grille très creuse, que la déduction seule ne finit pas
+    fn grille_bloquee() -> Grille {
+        for _ in 0..80 {
+            let g = Grille::generer(Taille::Neuf, String::from("Test"), 70);
+            if technique_requise(&g).is_none() {
+                return g;
+            }
+        }
+        panic!("aucune grille bloquée trouvée");
+    }
+
+    #[test]
+    fn test_un_indice_sans_deduction_possible_revele_quand_meme_la_solution() {
+        let mut g = grille_bloquee();
+        let solution = g.solution().unwrap().to_vec();
+        let indice = g.indice().unwrap();
+        assert_eq!(indice.valeur, solution[indice.ligne * 9 + indice.col]);
+        assert_eq!(g.valeur(indice.ligne, indice.col), indice.valeur);
+    }
+
+    #[test]
+    fn test_un_indice_sans_deduction_possible_le_dit() {
+        // Dans une grille que la déduction ne finit pas, on arrive forcément à un indice
+        // qu'aucune technique ne trouve : l'explication le dit franchement
+        let mut g = grille_bloquee();
+        let mut explications = Vec::new();
+        while let Some(indice) = g.indice() {
+            explications.push(indice.explication);
+        }
+        assert!(g.est_terminee());
+        assert!(
+            explications.iter().any(|texte| texte.contains("Aucune technique de déduction")),
+            "aucun indice n'a avoué qu'il ne venait d'aucune technique"
+        );
     }
 
     #[test]
@@ -967,21 +1226,138 @@ mod tests {
         }
     }
 
+    // La technique la plus difficile qu'il faut pour finir la grille par déduction pure
+    // (None si la déduction ne suffit pas)
+    fn technique_requise(grille: &Grille) -> Option<Technique> {
+        let geometrie = Geometrie::new(
+            grille.taille.cote(),
+            grille.taille.bloc_h(),
+            grille.taille.bloc_l(),
+        );
+        Logique::new(&geometrie, &grille.cases)
+            .unwrap()
+            .resoudre(Technique::XWing)
+    }
+
+    fn a_une_seule_solution(grille: &Grille) -> bool {
+        grille.solveur().unwrap().compter(2) == 1
+    }
+
+    // Ce qui doit être vrai de toute grille générée, quels que soient sa taille et son niveau
+    fn verifier_une_grille_generee(grille: &Grille, niveau: Niveau, taille: Taille) {
+        let nom = format!("{} {}", niveau.libelle(), taille.libelle());
+        assert_eq!(grille.taille(), taille, "{}", nom);
+        assert!(compter_vides(grille) > 0, "{}", nom);
+        // Les cases de départ sont verrouillées, et elles seules
+        for position in 0..taille.cases() {
+            assert_eq!(grille.fixes[position], grille.cases[position] != 0, "{}", nom);
+        }
+        // La solution connue complète bien la grille de départ
+        let solution = grille.solution().expect("une grille générée connaît sa solution");
+        for position in 0..taille.cases() {
+            assert!(grille.cases[position] == 0 || grille.cases[position] == solution[position], "{}", nom);
+        }
+        // On la finit par déduction, avec les techniques du niveau seulement, et sans jamais deviner
+        let requise = technique_requise(grille).unwrap_or_else(|| panic!("{} : la déduction ne suffit pas", nom));
+        assert!(requise <= technique_max(niveau), "{} demande {:?}", nom, requise);
+        if taille.cote() <= 9 {
+            assert!(a_une_seule_solution(grille), "{}", nom);
+        }
+    }
+
     #[test]
     fn test_generer_niveau_chaque_taille() {
         for taille in Taille::TOUTES {
-            for niveau in [Niveau::Facile, Niveau::Moyen] {
+            // Le niveau Difficile des grandes grilles est long à générer en mode debug
+            let niveaux: &[Niveau] = if taille.cote() >= 12 {
+                &[Niveau::Facile, Niveau::Moyen]
+            } else {
+                &Niveau::TOUS
+            };
+            for &niveau in niveaux {
                 let g = Grille::generer_niveau(niveau, taille);
-                assert_eq!(g.taille(), taille);
-                let vides = compter_vides(&g);
-                assert!(
-                    vides > 0 && vides <= niveau.cases_a_retirer(taille),
+                verifier_une_grille_generee(&g, niveau, taille);
+            }
+        }
+    }
+
+    #[test]
+    fn test_le_niveau_facile_s_arrete_au_nombre_de_cases_vises() {
+        for taille in Taille::TOUTES {
+            let g = Grille::generer_niveau(Niveau::Facile, taille);
+            assert_eq!(compter_vides(&g), Niveau::Facile.cases_a_retirer(taille), "{}", taille.libelle());
+        }
+    }
+
+    #[test]
+    fn test_facile_se_resout_avec_des_cases_uniques_et_des_chiffres_uniques() {
+        for taille in [Taille::Neuf, Taille::Douze] {
+            let g = Grille::generer_niveau(Niveau::Facile, taille);
+            let requise = technique_requise(&g).unwrap();
+            assert!(requise <= Technique::ChiffreUnique);
+        }
+    }
+
+    #[test]
+    fn test_les_petites_grilles_suivent_le_nombre_de_cases_vides() {
+        // En 4×4 et 6×6, le niveau ne dépend que du nombre de cases vides
+        for taille in [Taille::Quatre, Taille::Six] {
+            for niveau in Niveau::TOUS {
+                let g = Grille::generer_niveau(niveau, taille);
+                assert_eq!(
+                    compter_vides(&g),
+                    niveau.cases_a_retirer(taille),
                     "{} {}",
                     niveau.libelle(),
                     taille.libelle()
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_moyen_demande_une_intersection_ou_une_paire_nue() {
+        let mut conformes = 0;
+        for _ in 0..5 {
+            let g = Grille::generer_niveau(Niveau::Moyen, Taille::Neuf);
+            let requise = technique_requise(&g).unwrap();
+            assert!(requise <= Technique::PaireNue);
+            if requise >= Technique::Intersection {
+                conformes += 1;
+                // Au moins autant de cases vides que visé
+                assert!(compter_vides(&g) >= Niveau::Moyen.cases_a_retirer(Taille::Neuf));
+            }
+        }
+        // Un essai peut exceptionnellement échouer, jamais presque tous
+        assert!(conformes >= 4, "seulement {} grilles Moyen sur 5 demandent une vraie technique", conformes);
+    }
+
+    #[test]
+    fn test_difficile_demande_une_technique_avancee() {
+        let mut conformes = 0;
+        for _ in 0..3 {
+            let g = Grille::generer_niveau(Niveau::Difficile, Taille::Neuf);
+            let requise = technique_requise(&g).unwrap();
+            assert!(requise <= Technique::XWing);
+            if requise >= Technique::PaireCachee {
+                conformes += 1;
+            }
+        }
+        assert!(conformes >= 1, "aucune grille Difficile sur 3 ne demande de technique avancée");
+    }
+
+    #[test]
+    fn test_les_niveaux_se_classent_par_technique() {
+        // En 9×9, la technique la plus difficile ne baisse pas d'un niveau au suivant
+        let mut totaux = Vec::new();
+        for niveau in Niveau::TOUS {
+            let total: usize = (0..3)
+                .map(|_| technique_requise(&Grille::generer_niveau(niveau, Taille::Neuf)).unwrap() as usize)
+                .sum();
+            totaux.push(total);
+        }
+        assert!(totaux[0] < totaux[1], "{:?}", totaux);
+        assert!(totaux[1] < totaux[2], "{:?}", totaux);
     }
 
     #[test]
@@ -1025,7 +1401,7 @@ mod tests {
     #[test]
     fn test_indice_en_16x16() {
         let mut g = Grille::generer(Taille::Seize, String::from("Test"), 20);
-        let (ligne, col, valeur) = g.indice().unwrap();
+        let Indice { ligne, col, valeur, .. } = g.indice().unwrap();
         assert_eq!(g.valeur(ligne, col), valeur);
         assert!(g.est_correct(ligne, col, valeur));
     }

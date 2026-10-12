@@ -13,8 +13,8 @@ Déjà présent :
 - Chargement d'une grille de départ 9×9 depuis un texte de 81 chiffres (0 = case vide)
 - Cases de départ verrouillées, effacement des coups du joueur
 - Résolution automatique par retour sur trace (*backtracking*), avec un solveur qui traite en premier la case la plus contrainte
-- Génération de grilles aléatoires à solution unique, en trois niveaux de difficulté
-- Indices : le programme révèle une case au hasard avec la bonne valeur
+- Génération de grilles aléatoires à solution unique, en trois niveaux fondés sur les techniques de déduction qu'il faut pour les résoudre
+- Indices : le programme révèle une case et explique la technique de déduction qui la trouve
 - Interface graphique (avec [egui](https://github.com/emilk/egui)) : clic ou flèches pour choisir une case, clavier ou boutons pour les nombres
 - Menu : choix de la taille et du niveau, grille d'entraînement, reprise de la partie en cours
 - Défaite après 3 erreurs, chiffres faux affichés en rouge, chronomètre
@@ -34,15 +34,27 @@ Déjà présent :
 
 Le programme s'ouvre sur le **menu** : choisissez une taille de grille (4×4 à 16×16) puis un niveau (`Facile`, `Moyen`, `Difficile`), ou lancez la grille d'entraînement, ou reprenez la partie en cours.
 
-Le nombre de cases à trouver dépend du niveau et de la taille. Ces chiffres sont des maximums : la génération garde une case quand elle ne peut pas prouver rapidement que la solution reste unique sans elle.
+**La difficulté se mesure aux techniques.** Une grille n'est pas plus difficile parce qu'elle a plus de cases vides, mais parce qu'il faut des déductions plus subtiles pour la finir. Le programme résout chaque grille générée comme un humain, sans jamais deviner, en essayant les techniques de la plus simple à la plus difficile, et il mesure la plus difficile dont il a eu besoin :
 
-| Taille | Facile | Moyen | Difficile |
-| ------ | ------ | ----- | --------- |
-| 4×4    | 7      | 9     | 11        |
-| 6×6    | 15     | 20    | 24        |
-| 9×9    | 35     | 45    | 55        |
-| 12×12  | 62     | 81    | 98        |
-| 16×16  | 110    | 143   | 174       |
+| Niveau    | Techniques nécessaires |
+| --------- | ---------------------- |
+| Facile    | **Case unique** (une case n'a plus qu'un chiffre possible) et **chiffre unique** (un chiffre n'a plus qu'une case possible dans une ligne, une colonne ou un bloc) |
+| Moyen     | en plus, une **intersection** (un chiffre est limité à une ligne ou une colonne dans un bloc, ou l'inverse : il est impossible ailleurs sur cette ligne ou dans ce bloc) ou une **paire nue** (deux cases d'une zone n'ont que les deux mêmes chiffres) |
+| Difficile | en plus, une **paire cachée** (deux chiffres n'ont que les deux mêmes cases dans une zone), un **triplet nu** (trois cases, trois chiffres) ou un **X-Wing** (un chiffre limité aux deux mêmes colonnes dans deux lignes, ou l'inverse) |
+
+Une grille se finit donc toujours par déduction, sans essayer de chiffres au hasard : et comme chaque déduction est sûre, sa solution est unique. Un niveau ne demande jamais de technique plus difficile que la sienne.
+
+Le nombre de cases vides sert de repère. Il est de 43 %, 56 % et 68 % des cases pour Facile, Moyen et Difficile, mais seul Facile s'arrête exactement là : pour Moyen et Difficile, c'est un minimum, car on retire des cases tant que la grille ne demande pas les techniques du niveau (en 9×9, une grille Moyen a en général une cinquantaine de cases vides).
+
+| Taille | Facile | Moyen (au moins) | Difficile (au moins) |
+| ------ | ------ | ---------------- | -------------------- |
+| 4×4    | 7      | 9                | 11                   |
+| 6×6    | 15     | 20               | 24                   |
+| 9×9    | 35     | 45               | 55                   |
+| 12×12  | 62     | 81               | 98                   |
+| 16×16  | 110    | 143              | 174                  |
+
+En 4×4 et 6×6, les grilles sont trop petites pour que les techniques difficiles servent : le niveau n'y dépend que du nombre de cases vides, avec le chiffre exact du tableau. Dans les autres tailles, si aucune grille demandant les techniques du niveau n'est trouvée au bout de quelques secondes, le programme garde la plus difficile qu'il a trouvée (cela arrive rarement, surtout en `Difficile`).
 
 Pendant la partie :
 
@@ -50,7 +62,7 @@ Pendant la partie :
 - Tapez un nombre pour le placer. `0`, `Retour arrière` ou `Suppr` efface la case.
 - Au-delà de 9, un nombre s'écrit avec deux touches : tapez `1` puis `2` pour obtenir 12. Le `1` attend un instant le second chiffre, puis se place seul si rien ne suit. Quand les deux chiffres ne forment pas un nombre de la grille (17 en 16×16), le dernier compte seul.
 - Les boutons `1` jusqu'au côté de la grille et `Effacer` font la même chose à la souris.
-- `Indice` révèle une case au hasard, `Solution` affiche la grille complète et termine la partie.
+- `Indice` remplit une case et explique pourquoi : on choisit la case que la technique la plus simple permet de trouver (« Case unique : en ligne 3, colonne 4, un seul chiffre reste possible, le 7 »). Quand il faut d'abord retirer des possibilités, l'indice nomme les techniques à employer. Si aucune déduction ne mène à une case, il le dit et donne le chiffre de la solution. `Solution` affiche la grille complète et termine la partie.
 - `Annuler` (ou `Ctrl+Z`) défait le dernier changement de case, `Refaire` (ou `Ctrl+Y`, `Ctrl+Maj+Z`) le remet. Un nouveau coup efface ce qu'on pouvait refaire. Annuler ne rend ni les erreurs ni les indices déjà comptés, et l'historique n'est pas conservé quand on ferme le jeu.
 - **Notes au crayon.** Le bouton `Notes` (ou la touche `N`) bascule en mode notes : un nombre écrit alors une petite note dans la case choisie au lieu de jouer un chiffre, et le même nombre une seconde fois la retire. Les notes sont rangées en tableau dans la case, toujours à la même place. `0`, `Suppr` ou `Effacer` vident les notes d'une case vide (sur une case remplie, ils effacent le chiffre, même en mode notes). Les notes sont de simples brouillons : elles ne comptent aucune erreur et peuvent être fausses. `Remplir les notes` écrit dans chaque case vide tous les chiffres que les règles y permettent (sans révéler la solution, donc sans pénalité) et remplace les notes déjà écrites ; on peut le relancer quand la grille a avancé. Poser un chiffre efface les notes de sa case, et annuler ce coup les remet. Les notes sont conservées par la sauvegarde.
 - `Menu` met la partie en pause (le chronomètre s'arrête) et revient au menu.
@@ -137,7 +149,7 @@ Lancez le programme avec `terminal` en premier argument (voir plus bas). Il dema
 | ------- | -------------------------------------------- |
 | `1 3 4` | Place le 4 en ligne 1, colonne 3             |
 | `1 3 0` | Efface la case en ligne 1, colonne 3         |
-| `h`     | Révèle une case au hasard (indice)           |
+| `h`     | Révèle une case et explique la technique (indice) |
 | `s`     | Affiche la solution et termine la partie     |
 | `q`     | Quitte la partie                             |
 
@@ -174,7 +186,7 @@ cargo run -- terminal              # grille 9×9 moyenne
 cargo run -- terminal facile 12    # ou difficile, fixe ; taille 4, 6, 9, 12 ou 16
 ```
 
-La génération d'une grille prend en général moins d'une seconde, et jusqu'à quelques secondes pour une grande grille difficile avec `cargo run`. Elle est bien plus rapide avec `cargo run --release`.
+La génération d'une grille prend en général moins d'une seconde, et quelques secondes au plus pour une grande grille difficile avec `cargo run`. Elle est bien plus rapide avec `cargo run --release` (environ une seconde au plus, pour une 16×16 difficile).
 
 ## Exécutable
 
@@ -227,6 +239,7 @@ Sudoko/
 │   ├── reglages.rs # Réglages du joueur (thème, couleurs, sons) enregistrés dans un fichier
 │   ├── resolveur.rs # Saisie d'une grille 9×9 et sa résolution (écran « Résoudre une grille »)
 │   ├── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
+│   ├── technique.rs # Résolution « à la main » par déduction : mesure de la difficulté et explication des indices
 │   └── sons.rs   # Les bips du jeu (Windows)
 ├── LICENSE
 └── README.md

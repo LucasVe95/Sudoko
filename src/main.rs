@@ -10,6 +10,7 @@ mod sauvegarde;
 mod solveur;
 mod sons;
 mod statistiques;
+mod technique;
 
 use grille::{Grille, Niveau, Origine, Taille};
 
