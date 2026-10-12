@@ -491,31 +491,37 @@ impl Partie {
             return;
         }
 
-        let correct = self.grille.est_correct(ligne, col, valeur);
-        let place = self.grille.placer(ligne, col, valeur);
-        if place {
-            self.noter_coup(ligne, col, avant, valeur);
+        // Le même chiffre déjà dans la case : rien ne change, et ce n'est pas une nouvelle erreur
+        if avant == valeur {
+            return;
         }
+
+        // Le joueur a le droit de se tromper : le chiffre est toujours posé, même s'il enfreint une
+        // règle. S'il n'est pas celui de la solution, il s'affiche en rouge et compte une erreur.
+        let correct = self.grille.est_correct(ligne, col, valeur);
+        let respecte_les_regles = self.grille.est_valide(ligne, col, valeur);
+        self.grille.poser(ligne, col, valeur);
+        self.noter_coup(ligne, col, avant, valeur);
         if correct {
-            if place || self.grille.valeur(ligne, col) == valeur {
-                self.message.clear();
-                if place {
-                    self.sons.push(Son::Bon);
-                }
+            self.sons.push(Son::Bon);
+            self.message = if respecte_les_regles {
+                String::new()
             } else {
-                // Le bon chiffre est refusé : un chiffre faux posé plus tôt le bloque
-                self.message =
-                    String::from("Un chiffre rouge de la même ligne, colonne ou bloc vous bloque : effacez-le");
-            }
+                // Le bon chiffre est posé, mais un chiffre rouge posé plus tôt le contredit
+                String::from("Un chiffre rouge de la même ligne, colonne ou bloc le contredit : effacez-le")
+            };
         } else {
             self.erreurs += 1;
             self.sons.push(Son::Erreur);
-            let raison = if place {
+            let raison = if respecte_les_regles {
                 "Ce n'est pas le bon chiffre"
             } else {
-                "Coup refusé : il brise une règle"
+                "Ce chiffre est déjà dans la ligne, la colonne ou le bloc"
             };
-            self.message = format!("{} (erreur {}/{})", raison, self.erreurs, MAX_ERREURS);
+            self.message = format!(
+                "{} (erreur {}/{}). Il est en rouge : effacez-le avec 0 ou Suppr.",
+                raison, self.erreurs, MAX_ERREURS
+            );
         }
 
         if self.grille.est_terminee() {
@@ -640,7 +646,7 @@ impl Partie {
         if valeur == 0 {
             self.grille.effacer(ligne, col);
         } else {
-            self.grille.placer(ligne, col, valeur);
+            self.grille.poser(ligne, col, valeur);
         }
     }
 
@@ -655,7 +661,7 @@ impl Partie {
             self.message = String::from("Rien à annuler");
             return;
         };
-        // La grille revient exactement dans l'état d'avant ce coup : la valeur est permise
+        // La grille revient exactement dans l'état d'avant ce coup
         self.fixer_case(coup.ligne, coup.col, coup.avant);
         let position = self.position(coup.ligne, coup.col);
         self.notes[position] = coup.notes;
@@ -1822,12 +1828,96 @@ mod tests {
     }
 
     #[test]
-    fn test_chiffre_qui_brise_une_regle_est_refuse_et_compte() {
+    fn test_chiffre_qui_brise_une_regle_est_pose_en_rouge_et_compte() {
         let mut partie = partie_fixe();
-        // Il y a déjà un 5 sur la ligne 0
+        // Il y a déjà un 5 sur la ligne 0 : le joueur se trompe, le chiffre est quand même posé
         jouer(&mut partie, 0, 2, 5);
         assert_eq!(partie.erreurs, 1);
+        assert_eq!(partie.grille.valeur(0, 2), 5);
+        assert!(partie.a_des_chiffres_faux());
+        assert!(!partie.grille.est_correct(0, 2, 5));
+        assert!(partie.message.contains("déjà dans la ligne, la colonne ou le bloc"), "{}", partie.message);
+        assert!(partie.message.contains("erreur 1/3"), "{}", partie.message);
+    }
+
+    #[test]
+    fn test_on_peut_effacer_un_chiffre_qui_brise_une_regle() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5);
+        assert!(partie.a_des_chiffres_faux());
+        // Effacer le chiffre faux ne rend pas l'erreur, mais la grille est de nouveau saine
+        jouer(&mut partie, 0, 2, 0);
         assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert!(!partie.a_des_chiffres_faux());
+        assert_eq!(partie.erreurs, 1);
+        // Et on peut y mettre le bon chiffre
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+        assert_eq!(partie.erreurs, 1);
+    }
+
+    #[test]
+    fn test_retaper_le_meme_chiffre_faux_ne_compte_pas_une_nouvelle_erreur() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5);
+        jouer(&mut partie, 0, 2, 5);
+        jouer(&mut partie, 0, 2, 5);
+        assert_eq!(partie.erreurs, 1);
+        assert_eq!(partie.historique.len(), 1);
+    }
+
+    #[test]
+    fn test_remplacer_un_chiffre_faux_par_un_autre_chiffre_faux_compte_une_erreur() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5); // brise une règle
+        jouer(&mut partie, 0, 2, 1); // faux, mais permis par les règles
+        assert_eq!(partie.erreurs, 2);
+        assert_eq!(partie.grille.valeur(0, 2), 1);
+    }
+
+    #[test]
+    fn test_une_grille_pleine_avec_un_chiffre_faux_n_est_pas_une_victoire() {
+        let mut partie = partie_fixe();
+        let mut solution = partie.grille.clone();
+        assert!(solution.remplir_solution());
+        // On remplit tout avec les bons chiffres, sauf la case (0, 2) : un 5 qui brise une règle
+        for ligne in 0..9 {
+            for col in 0..9 {
+                if partie.grille.valeur(ligne, col) == 0 && (ligne, col) != (0, 2) {
+                    jouer(&mut partie, ligne, col, solution.valeur(ligne, col));
+                }
+            }
+        }
+        jouer(&mut partie, 0, 2, 5);
+        assert!(partie.grille.cases().iter().all(|&valeur| valeur != 0));
+        assert_eq!(partie.fin, None);
+        assert_eq!(partie.erreurs, 1);
+
+        // Le chiffre corrigé finit la partie
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.fin, Some(Fin::Victoire));
+    }
+
+    #[test]
+    fn test_annuler_un_chiffre_qui_brise_une_regle() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5);
+        partie.annuler();
+        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.erreurs, 1);
+        partie.refaire();
+        assert_eq!(partie.grille.valeur(0, 2), 5);
+        assert!(partie.a_des_chiffres_faux());
+    }
+
+    #[test]
+    fn test_une_partie_avec_un_chiffre_rouge_se_sauvegarde_et_se_reprend() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 5); // un 5 de trop sur la ligne
+        let restauree = Partie::restaurer(partie.vers_sauvegarde()).unwrap();
+        assert_eq!(restauree.grille.valeur(0, 2), 5);
+        assert!(restauree.a_des_chiffres_faux());
+        assert_eq!(restauree.erreurs, 1);
     }
 
     #[test]
@@ -1841,25 +1931,27 @@ mod tests {
     #[test]
     fn test_defaite_apres_trois_erreurs() {
         let mut partie = partie_fixe();
-        for _ in 0..MAX_ERREURS {
-            jouer(&mut partie, 0, 2, 5);
-        }
+        perdre(&mut partie);
         assert_eq!(partie.fin, Some(Fin::Defaite));
         // Une fois perdue, la partie ne bouge plus
         jouer(&mut partie, 0, 2, 4);
-        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.grille.valeur(0, 2), 5);
     }
 
     #[test]
-    fn test_chiffre_faux_bloque_le_bon_chiffre_sans_erreur() {
+    fn test_le_bon_chiffre_se_pose_meme_si_un_chiffre_faux_le_contredit() {
         let mut partie = partie_fixe();
-        // Un 1 faux en (0, 2) empêche de poser le vrai 1 en (0, 7), sur la même ligne
+        // Un 1 faux en (0, 2), puis le vrai 1 en (0, 7), sur la même ligne : il est posé, sans erreur
         jouer(&mut partie, 0, 2, 1);
         assert_eq!(partie.erreurs, 1);
         jouer(&mut partie, 0, 7, 1);
         assert_eq!(partie.erreurs, 1);
-        assert_eq!(partie.grille.valeur(0, 7), 0);
-        assert!(!partie.message.is_empty());
+        assert_eq!(partie.grille.valeur(0, 7), 1);
+        assert!(partie.grille.est_correct(0, 7, 1));
+        // Le message explique que le chiffre rouge le contredit
+        assert!(partie.message.contains("le contredit"), "{}", partie.message);
+        // Seul le chiffre faux est en rouge
+        assert!(!partie.grille.est_correct(0, 2, 1));
     }
 
     #[test]
@@ -1890,9 +1982,7 @@ mod tests {
     #[test]
     fn test_solution_apres_defaite_reste_une_defaite() {
         let mut partie = partie_fixe();
-        for _ in 0..MAX_ERREURS {
-            jouer(&mut partie, 0, 2, 5);
-        }
+        perdre(&mut partie);
         partie.afficher_solution();
         assert_eq!(partie.fin, Some(Fin::Defaite));
         assert!(partie.solution_affichee);
@@ -1938,6 +2028,14 @@ mod tests {
         assert!(partie.reprise.is_some());
     }
 
+    // Fait trois erreurs, dans trois cases différentes : la partie est perdue.
+    // (Le 5 est faux en (0, 2), (0, 3) et (0, 5), où la solution met 4, 6 et 8.)
+    fn perdre(partie: &mut Partie) {
+        for col in [2, 3, 5] {
+            jouer(partie, 0, col, 5);
+        }
+    }
+
     // Une partie sur la grille fixe, mais étiquetée comme une partie de niveau Moyen
     // pour qu'une victoire donne un score
     fn partie_moyenne() -> Partie {
@@ -1973,6 +2071,7 @@ mod tests {
     fn test_le_score_tient_compte_des_erreurs_et_des_indices() {
         let mut partie = partie_moyenne();
         jouer(&mut partie, 0, 2, 5); // erreur : brise une règle
+        jouer(&mut partie, 0, 2, 0); // on efface le chiffre rouge : l'indice redevient possible
         partie.demander_indice();
         gagner(&mut partie);
         let score = partie.score.unwrap();
@@ -1991,9 +2090,7 @@ mod tests {
     #[test]
     fn test_pas_de_score_en_cas_de_defaite_ou_d_abandon() {
         let mut perdue = partie_moyenne();
-        for _ in 0..MAX_ERREURS {
-            jouer(&mut perdue, 0, 2, 5);
-        }
+        perdre(&mut perdue);
         assert_eq!(perdue.fin, Some(Fin::Defaite));
         assert_eq!(perdue.score, None);
 
@@ -2204,6 +2301,7 @@ mod tests {
     fn test_une_partie_restauree_reprend_ou_elle_en_etait() {
         let mut partie = partie_moyenne();
         jouer(&mut partie, 0, 2, 5); // erreur : brise une règle
+        jouer(&mut partie, 0, 2, 0); // on efface le chiffre rouge : l'indice redevient possible
         partie.demander_indice();
         partie.ecoule = Duration::from_secs(120);
 
@@ -2313,10 +2411,11 @@ mod tests {
     #[test]
     fn test_un_coup_refuse_ou_inutile_n_est_pas_retenu() {
         let mut partie = partie_fixe();
-        jouer(&mut partie, 0, 2, 5); // brise une règle : refusé
         jouer(&mut partie, 0, 2, 0); // case déjà vide
         jouer(&mut partie, 0, 0, 7); // case de départ
+        jouer(&mut partie, 0, 2, 10); // un chiffre qui n'est pas dans la grille
         assert!(partie.historique.is_empty());
+        assert_eq!(partie.erreurs, 0);
         jouer(&mut partie, 0, 2, 4);
         jouer(&mut partie, 0, 2, 4); // déjà là
         assert_eq!(partie.historique.len(), 1);
@@ -2577,9 +2676,7 @@ mod tests {
     #[test]
     fn test_une_defaite_et_un_abandon_entrent_dans_les_statistiques() {
         let mut perdue = partie_moyenne();
-        for _ in 0..MAX_ERREURS {
-            jouer(&mut perdue, 0, 2, 5);
-        }
+        perdre(&mut perdue);
         assert_eq!(perdue.fin, Some(Fin::Defaite));
         let mut application = application_de_test(perdue);
         application.sauvegarder_partie();
@@ -2616,6 +2713,7 @@ mod tests {
     fn test_la_statistique_garde_les_chiffres_de_la_partie() {
         let mut partie = partie_moyenne();
         jouer(&mut partie, 0, 2, 5); // une erreur
+        jouer(&mut partie, 0, 2, 0); // on efface le chiffre rouge : l'indice redevient possible
         partie.demander_indice();
         gagner(&mut partie);
         let jouee = partie.vers_statistique().unwrap();
@@ -2632,9 +2730,11 @@ mod tests {
         partie.tampon = Some((1, 0.0));
         partie.selection = Some((0, 3));
         partie.annuler();
-        // Le 1 en attente est joué en (0, 3) où il est refusé, puis le 4 est annulé
+        // Le 1 en attente est d'abord joué en (0, 3) (il y est faux), puis c'est ce coup qui est annulé
         assert!(partie.tampon.is_none());
-        assert_eq!(partie.grille.valeur(0, 2), 0);
+        assert_eq!(partie.grille.valeur(0, 3), 0);
+        assert_eq!(partie.grille.valeur(0, 2), 4);
+        assert_eq!(partie.erreurs, 1);
     }
 
     // La luminance relative d'une couleur (formule du W3C pour le contraste)
@@ -2727,6 +2827,8 @@ mod tests {
         jouer(&mut partie, 0, 3, 5); // brise une règle : une erreur
         assert_eq!(partie.sons, [Son::Erreur]);
 
+        // Avec un chiffre faux dans la grille, l'indice n'est pas possible : on l'efface d'abord
+        jouer(&mut partie, 0, 3, 0);
         partie.sons.clear();
         partie.demander_indice();
         assert_eq!(partie.sons, [Son::Indice]);
@@ -2750,9 +2852,7 @@ mod tests {
         assert_eq!(gagnee.sons.last(), Some(&Son::Victoire));
 
         let mut perdue = partie_fixe();
-        for _ in 0..MAX_ERREURS {
-            jouer(&mut perdue, 0, 2, 5);
-        }
+        perdre(&mut perdue);
         assert_eq!(perdue.sons.last(), Some(&Son::Defaite));
         assert_eq!(perdue.sons.iter().filter(|&&son| son == Son::Erreur).count(), MAX_ERREURS as usize);
 

@@ -178,9 +178,18 @@ impl Grille {
         if cases.len() != nombre || fixes.len() != nombre {
             return Err(format!("{} cases attendues", nombre));
         }
-        // Pas de chiffre hors limites ni de doublon dans une ligne, une colonne ou un bloc
+        // Pas de chiffre hors de la grille, et pas de doublon dans une ligne, une colonne ou un bloc
+        // parmi les cases de départ. Les chiffres du joueur peuvent, eux, se contredire : il a le
+        // droit de se tromper.
         let (cote, bloc_h, bloc_l) = (taille.cote(), taille.bloc_h(), taille.bloc_l());
-        if Solveur::new(cote, bloc_h, bloc_l, &cases).is_none() {
+        let depart: Vec<u8> = cases
+            .iter()
+            .zip(&fixes)
+            .map(|(&valeur, &fixe)| if fixe { valeur } else { 0 })
+            .collect();
+        if cases.iter().any(|&valeur| valeur as usize > cote)
+            || Solveur::new(cote, bloc_h, bloc_l, &depart).is_none()
+        {
             return Err(String::from("Cases invalides"));
         }
         // Une case de départ n'est jamais vide
@@ -308,7 +317,7 @@ impl Grille {
     }
 
     // Vérifie si on peut mettre `valeur` dans la case (ligne, col) sans briser les règles
-    fn est_valide(&self, ligne: usize, col: usize, valeur: u8) -> bool {
+    pub fn est_valide(&self, ligne: usize, col: usize, valeur: u8) -> bool {
         // Vérifie la ligne et la colonne en même temps
         for i in 0..self.taille.cote() {
             if self.valeur(ligne, i) == valeur || self.valeur(i, col) == valeur {
@@ -352,6 +361,18 @@ impl Grille {
             || self.fixes[position]
             || !self.est_valide(ligne, col, valeur)
         {
+            return false;
+        }
+        self.cases[position] = valeur;
+        true
+    }
+
+    // Pose un chiffre sans vérifier les règles du sudoku : le joueur a le droit de se tromper, le
+    // chiffre faux est alors affiché en rouge et peut être effacé. Renvoie false si la case est
+    // une case de départ ou si le chiffre n'est pas dans la grille (de 1 au côté).
+    pub fn poser(&mut self, ligne: usize, col: usize, valeur: u8) -> bool {
+        let position = self.position(ligne, col);
+        if valeur == 0 || valeur as usize > self.taille.cote() || self.fixes[position] {
             return false;
         }
         self.cases[position] = valeur;
@@ -407,10 +428,10 @@ impl Grille {
         self.resoudre()
     }
 
-    // La grille est gagnée quand toutes les cases sont remplies.
-    // Chaque chiffre ayant été vérifié par est_valide, il n'y a rien d'autre à contrôler.
+    // La grille est gagnée quand toutes les cases sont remplies et que les règles sont respectées :
+    // une grille pleine peut contenir des chiffres posés avec `poser`, qui se contredisent.
     pub fn est_terminee(&self) -> bool {
-        self.cases.iter().all(|&case| case != 0)
+        self.cases.iter().all(|&case| case != 0) && self.solveur().is_some()
     }
 
     // Remplit une case vide avec la bonne valeur, et explique pourquoi c'est la bonne.
@@ -960,6 +981,62 @@ mod tests {
         assert_eq!(valeur, solution.valeur(ligne, col));
         // 51 cases vides au départ, une de moins maintenant
         assert_eq!(compter_vides(&g), 50);
+    }
+
+    #[test]
+    fn test_poser_ne_verifie_pas_les_regles() {
+        let mut g = depart();
+        // Il y a déjà un 5 sur la ligne 0 : `placer` refuse, `poser` accepte
+        assert!(!g.placer(0, 2, 5));
+        assert!(g.poser(0, 2, 5));
+        assert_eq!(g.valeur(0, 2), 5);
+        assert!(!g.est_correct(0, 2, 5));
+        // Ce qui reste refusé : une case de départ, le 0 et un chiffre hors de la grille
+        assert!(!g.poser(0, 0, 9));
+        assert_eq!(g.valeur(0, 0), 5);
+        assert!(!g.poser(0, 3, 0));
+        assert!(!g.poser(0, 3, 10));
+        assert_eq!(g.valeur(0, 3), 0);
+    }
+
+    #[test]
+    fn test_une_grille_pleine_qui_se_contredit_n_est_pas_terminee() {
+        let mut g = Grille::generer(Taille::Neuf, String::from("Test"), 20);
+        assert!(g.remplir_solution());
+        assert!(g.est_terminee());
+
+        // On remplace un chiffre du joueur par un autre déjà présent sur sa ligne
+        let position = (0..81).find(|&position| !g.fixes[position]).unwrap();
+        let (ligne, col) = (position / 9, position % 9);
+        let bon = g.valeur(ligne, col);
+        let autre_col = (0..9).find(|&c| c != col).unwrap();
+        let doublon = g.valeur(ligne, autre_col);
+        assert!(g.poser(ligne, col, doublon));
+        assert!(g.cases.iter().all(|&case| case != 0));
+        assert!(!g.est_terminee());
+
+        assert!(g.poser(ligne, col, bon));
+        assert!(g.est_terminee());
+    }
+
+    #[test]
+    fn test_restaurer_accepte_les_doublons_du_joueur_mais_pas_ceux_du_depart() {
+        let mut g = depart();
+        assert!(g.poser(0, 2, 5)); // un doublon du joueur
+        let restauree = Grille::restaurer(
+            Taille::Neuf,
+            String::from("Test"),
+            g.cases.clone(),
+            g.fixes.clone(),
+            g.solution.clone(),
+        );
+        assert!(restauree.is_ok());
+
+        // Le même doublon, mais entre cases de départ : la grille est incohérente
+        let mut fixes = g.fixes.clone();
+        fixes[2] = true;
+        let refusee = Grille::restaurer(Taille::Neuf, String::from("Test"), g.cases.clone(), fixes, None);
+        assert!(refusee.is_err());
     }
 
     #[test]

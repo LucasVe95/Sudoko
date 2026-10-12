@@ -326,12 +326,25 @@ mod tests {
         let court = cases.rsplit_once(',').unwrap().0.to_string();
         assert!(PartieSauvee::depuis_texte(&texte.replace(&cases, &court)).is_none());
 
-        // Un doublon dans une ligne : les deux premières cases reçoivent le même chiffre
+        // Un doublon dans une ligne, entre deux cases de départ : les deux premières cases reçoivent le
+        // même chiffre et sont déclarées cases de départ
         let doublon = format!("cases\t1,1,{}", cases.splitn(3, ',').nth(2).unwrap());
-        assert!(PartieSauvee::depuis_texte(&texte.replace(&cases, &doublon)).is_none());
+        let fixes: String = partie.grille.fixes().iter().map(|&f| if f { '1' } else { '0' }).collect();
+        let departs = format!("fixes\t11{}", &fixes[2..]);
+        let texte_en_doublon = texte.replace(&cases, &doublon).replace(&format!("fixes\t{}", fixes), &departs);
+        assert!(PartieSauvee::depuis_texte(&texte_en_doublon).is_none());
+
+        // Entre des chiffres du joueur, en revanche, un doublon est permis : il a le droit de se tromper
+        let texte_du_joueur = texte.replace(&cases, &doublon).replace(&format!("fixes\t{}", fixes), &format!("fixes\t00{}", &fixes[2..]));
+        // (sans la ligne des notes, qui pourrait viser une des deux cases désormais remplies)
+        let sans_notes: String = texte_du_joueur
+            .lines()
+            .filter(|ligne| !ligne.starts_with("notes"))
+            .map(|ligne| format!("{}\n", ligne))
+            .collect();
+        assert!(PartieSauvee::depuis_texte(&sans_notes).is_some());
 
         // Des cases de départ qui ne sont ni des 0 ni des 1
-        let fixes: String = partie.grille.fixes().iter().map(|&f| if f { '1' } else { '0' }).collect();
         let abimees = fixes.replacen('0', "x", 1);
         assert!(PartieSauvee::depuis_texte(&texte.replace(&fixes, &abimees)).is_none());
     }

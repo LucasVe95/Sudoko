@@ -70,7 +70,7 @@ Pendant la partie :
 
 Les chiffres de départ sont en noir et ceux du joueur en bleu. Les cases qui contiennent le même chiffre que la case choisie sont mises en valeur.
 
-**Erreurs et défaite.** Un chiffre qui n'est pas celui de la solution compte comme une erreur, qu'il brise une règle du sudoku (le coup est alors refusé) ou non (le chiffre est placé, mais s'affiche en rouge). Au bout de 3 erreurs, la partie est perdue.
+**Erreurs et défaite.** Vous avez le droit de vous tromper : un chiffre est toujours posé, même s'il est faux, y compris quand il enfreint une règle du sudoku (déjà présent dans la ligne, la colonne ou le bloc). S'il n'est pas celui de la solution, il s'affiche **en rouge** et compte comme une erreur, et le message vous le dit. Vous pouvez l'effacer (`0`, `Suppr`, `Effacer`) ou annuler le coup (`Ctrl+Z`), puis y mettre le bon chiffre ; effacer ne rend pas l'erreur. Retaper le même chiffre faux dans la même case ne compte pas une seconde erreur. Le bon chiffre se pose aussi quand un chiffre rouge de la même zone le contredit : seul le chiffre faux est en rouge. Au bout de 3 erreurs, la partie est perdue. Une grille pleine n'est une victoire que si elle respecte toutes les règles.
 
 **Fin de partie.** Un écran de fin indique si la partie est gagnée, perdue ou abandonnée, avec le temps, les erreurs et les indices utilisés. Il propose de rejouer, d'ouvrir le classement, de retourner au menu et, après une défaite, de voir la solution.
 
@@ -153,7 +153,7 @@ Lancez le programme avec `terminal` en premier argument (voir plus bas). Il dema
 | `s`     | Affiche la solution et termine la partie     |
 | `q`     | Quitte la partie                             |
 
-Un coup est refusé s'il brise une règle du sudoku ou s'il vise une case de la grille de départ.
+Un coup est refusé s'il brise une règle du sudoku ou s'il vise une case de la grille de départ. (Dans la fenêtre, au contraire, un chiffre faux est posé en rouge et compte une erreur.)
 
 ## Prérequis
 
