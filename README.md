@@ -21,6 +21,7 @@ Déjà présent :
 - Écran de fin (victoire, défaite, abandon) avec le temps, les erreurs et les indices
 - Score à chaque victoire et classement des meilleurs scores par taille, conservé d'une session à l'autre
 - Statistiques par taille et par niveau : victoires, meilleur temps, séries
+- Réglages : thème clair ou sombre, mode daltonien, sons, mise en valeur des cases
 - Résolution d'une grille de journal saisie ou collée, avec détection des erreurs de saisie et des grilles à plusieurs solutions
 - Notes au crayon dans les cases vides, avec un remplissage automatique des chiffres permis
 - Annuler et refaire les coups (`Ctrl+Z`, `Ctrl+Y`)
@@ -112,6 +113,21 @@ Le bouton `Résoudre une grille` du menu ouvre un écran où l'on recopie une gr
 - Deux chiffres identiques dans une même ligne, colonne ou bloc s'affichent en rouge, et la résolution est refusée tant qu'ils sont là (c'est souvent une faute de frappe).
 - `Résoudre` remplit les cases vides : les chiffres saisis restent en noir, ceux trouvés par le programme sont en bleu. Un message indique si la solution est unique, s'il y en a plusieurs (le programme en montre alors une, et rappelle qu'une grille a besoin d'au moins 17 chiffres pour avoir une solution unique) ou s'il n'y en a aucune. La recherche s'arrête au bout d'environ une seconde si elle est trop longue.
 - `Modifier la grille` retire la solution pour corriger la saisie, et `Tout effacer` repart d'une grille vide.
+
+### Réglages
+
+Le bouton `Réglages` du menu ouvre l'écran des réglages. Chaque changement s'applique tout de suite et est enregistré.
+
+- **Thème** : `Celui du système` (par défaut), `Clair` ou `Sombre`. Il s'applique à la fenêtre et à la grille, qui prend des couleurs sombres en thème sombre.
+- **Mode daltonien** : le chiffre du joueur passe en bleu, le chiffre faux en orange (palette d'Okabe et Ito, lisible quand on confond le rouge et le vert) et il est en plus souligné, pour ne pas dépendre de la couleur seule. Un aperçu montre le résultat.
+- **Aide visuelle** : mettre en valeur, ou non, la ligne, la colonne et le bloc de la case choisie, et les chiffres identiques à celui de la case choisie. Les deux sont activés par défaut.
+- **Sons** : un petit son pour un bon chiffre, une erreur, un indice, une victoire et une défaite. Ils sont désactivés par défaut, et des boutons permettent de les écouter avant de les activer. Ils ne sont joués que sous Windows (ce sont des bips du système) ; ailleurs, le jeu reste silencieux.
+- `Réglages par défaut` remet tout comme à l'installation.
+
+Les réglages sont dans un fichier texte à côté des autres, que l'on peut supprimer pour revenir aux réglages par défaut :
+
+- Windows : `%APPDATA%\Sudoko\reglages.txt`
+- Linux et macOS : `~/.local/share/Sudoko/reglages.txt`
 
 ### Au terminal
 
@@ -208,8 +224,10 @@ Sudoko/
 │   ├── sauvegarde.rs # Sauvegarde et reprise de la partie en cours (fichier texte)
 │   ├── statistiques.rs # Parties terminées enregistrées dans un fichier, et calcul des statistiques
 │   ├── grille.rs # Structure Grille et ses tailles : règles, chargement, génération, indices
+│   ├── reglages.rs # Réglages du joueur (thème, couleurs, sons) enregistrés dans un fichier
 │   ├── resolveur.rs # Saisie d'une grille 9×9 et sa résolution (écran « Résoudre une grille »)
-│   └── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
+│   ├── solveur.rs # Solveur par retour sur trace (candidats en bits, case la plus contrainte)
+│   └── sons.rs   # Les bips du jeu (Windows)
 ├── LICENSE
 └── README.md
 ```

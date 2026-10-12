@@ -4,8 +4,10 @@ use crate::classement::{
     calculer_score, maintenant, nettoyer_nom, penalite_erreur, penalite_indice, Classement, Entree,
 };
 use crate::grille::{Grille, Niveau, Origine, Taille};
+use crate::reglages::{Reglages, Theme};
 use crate::resolveur::Resolveur;
 use crate::sauvegarde::{PartieSauvee, Sauvegarde};
+use crate::sons::{self, Son};
 use crate::statistiques::{PartieJouee, Resultat, Statistiques};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextEdit, Vec2,
@@ -34,19 +36,101 @@ const TOUCHES_CHIFFRES: [(Key, u8); 10] = [
     (Key::Num9, 9),
 ];
 
-// Couleurs de la grille : elle reste claire, quel que soit le thème de la fenêtre
-const FOND: Color32 = Color32::WHITE;
-const CASE_SELECTIONNEE: Color32 = Color32::from_rgb(170, 205, 250);
-const MEME_CHIFFRE: Color32 = Color32::from_rgb(210, 225, 250);
-const LIGNE_COLONNE_BLOC: Color32 = Color32::from_rgb(235, 240, 248);
-const CHIFFRE_DEPART: Color32 = Color32::from_rgb(25, 25, 25);
-const CHIFFRE_JOUEUR: Color32 = Color32::from_rgb(30, 90, 200);
-const NOTE: Color32 = Color32::from_rgb(110, 110, 130);
-const CHIFFRE_FAUX: Color32 = Color32::from_rgb(210, 40, 40);
-const TRAIT_FIN: Color32 = Color32::from_rgb(170, 170, 170);
-const TRAIT_EPAIS: Color32 = Color32::from_rgb(25, 25, 25);
-const VERT: Color32 = Color32::from_rgb(40, 160, 70);
-const ROUGE: Color32 = Color32::from_rgb(210, 60, 60);
+// Ce qu'est un chiffre de la grille, pour choisir sa couleur
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GenreChiffre {
+    // Un chiffre de la grille de départ
+    Depart,
+    // Un chiffre posé par le joueur (ou trouvé par le solveur)
+    Joueur,
+    // Un chiffre qui n'est pas celui de la solution, ou qui contredit un autre
+    Faux,
+}
+
+// Les couleurs de la grille et des messages, selon le thème (clair ou sombre) et le mode daltonien
+struct Palette {
+    fond: Color32,
+    case_selectionnee: Color32,
+    meme_chiffre: Color32,
+    ligne_colonne_bloc: Color32,
+    chiffre_depart: Color32,
+    chiffre_joueur: Color32,
+    chiffre_faux: Color32,
+    note: Color32,
+    trait_fin: Color32,
+    trait_epais: Color32,
+    vert: Color32,
+    rouge: Color32,
+}
+
+impl Palette {
+    fn pour(sombre: bool, daltonien: bool) -> Palette {
+        let mut palette = if sombre {
+            Palette {
+                fond: Color32::from_rgb(30, 30, 34),
+                case_selectionnee: Color32::from_rgb(65, 100, 165),
+                meme_chiffre: Color32::from_rgb(55, 70, 105),
+                ligne_colonne_bloc: Color32::from_rgb(45, 48, 56),
+                chiffre_depart: Color32::from_rgb(235, 235, 235),
+                chiffre_joueur: Color32::from_rgb(110, 170, 255),
+                chiffre_faux: Color32::from_rgb(255, 100, 100),
+                note: Color32::from_rgb(150, 150, 170),
+                trait_fin: Color32::from_rgb(90, 90, 95),
+                trait_epais: Color32::from_rgb(210, 210, 215),
+                vert: Color32::from_rgb(90, 200, 120),
+                rouge: Color32::from_rgb(240, 100, 100),
+            }
+        } else {
+            Palette {
+                fond: Color32::WHITE,
+                case_selectionnee: Color32::from_rgb(170, 205, 250),
+                meme_chiffre: Color32::from_rgb(210, 225, 250),
+                ligne_colonne_bloc: Color32::from_rgb(235, 240, 248),
+                chiffre_depart: Color32::from_rgb(25, 25, 25),
+                chiffre_joueur: Color32::from_rgb(30, 90, 200),
+                chiffre_faux: Color32::from_rgb(210, 40, 40),
+                note: Color32::from_rgb(110, 110, 130),
+                trait_fin: Color32::from_rgb(170, 170, 170),
+                trait_epais: Color32::from_rgb(25, 25, 25),
+                vert: Color32::from_rgb(40, 160, 70),
+                rouge: Color32::from_rgb(210, 60, 60),
+            }
+        };
+        if daltonien {
+            // Bleu, orange et vert bleuté : ces couleurs restent distinctes quand on confond
+            // le rouge et le vert (palette d'Okabe et Ito)
+            if sombre {
+                palette.chiffre_joueur = Color32::from_rgb(86, 180, 233);
+                palette.chiffre_faux = Color32::from_rgb(240, 160, 40);
+                palette.vert = Color32::from_rgb(0, 200, 150);
+                palette.rouge = Color32::from_rgb(240, 130, 60);
+            } else {
+                palette.chiffre_joueur = Color32::from_rgb(0, 114, 178);
+                palette.chiffre_faux = Color32::from_rgb(213, 94, 0);
+                palette.vert = Color32::from_rgb(0, 158, 115);
+                palette.rouge = Color32::from_rgb(213, 94, 0);
+            }
+        }
+        palette
+    }
+
+    fn chiffre(&self, genre: GenreChiffre) -> Color32 {
+        match genre {
+            GenreChiffre::Depart => self.chiffre_depart,
+            GenreChiffre::Joueur => self.chiffre_joueur,
+            GenreChiffre::Faux => self.chiffre_faux,
+        }
+    }
+}
+
+// Le thème d'egui qui correspond à un thème choisi dans les réglages
+fn theme_egui(theme: Theme) -> egui::ThemePreference {
+    match theme {
+        Theme::Systeme => egui::ThemePreference::System,
+        Theme::Clair => egui::ThemePreference::Light,
+        Theme::Sombre => egui::ThemePreference::Dark,
+    }
+}
 
 // Comment une partie s'est terminée
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -82,6 +166,7 @@ enum ChoixMenu {
     Classement,
     Statistiques,
     Resolution,
+    Reglages,
     Quitter,
 }
 
@@ -204,6 +289,8 @@ struct Partie {
     mode_notes: bool,
     // true quand la fin de la partie est déjà entrée dans les statistiques
     comptee: bool,
+    // Les sons à jouer : l'application les prend à chaque image, et les joue si les sons sont activés
+    sons: Vec<Son>,
 }
 
 impl Partie {
@@ -230,6 +317,7 @@ impl Partie {
             notes,
             mode_notes: false,
             comptee: false,
+            sons: Vec::new(),
         }
     }
 
@@ -305,6 +393,11 @@ impl Partie {
         if self.fin.is_none() {
             self.fin = Some(fin);
             self.modifiee = true;
+            match fin {
+                Fin::Victoire => self.sons.push(Son::Victoire),
+                Fin::Defaite => self.sons.push(Son::Defaite),
+                Fin::Abandon => {}
+            }
             self.arreter_chrono();
             if let (Fin::Victoire, Origine::Niveau(niveau, taille)) = (fin, self.origine) {
                 self.score = Some(calculer_score(
@@ -406,6 +499,9 @@ impl Partie {
         if correct {
             if place || self.grille.valeur(ligne, col) == valeur {
                 self.message.clear();
+                if place {
+                    self.sons.push(Son::Bon);
+                }
             } else {
                 // Le bon chiffre est refusé : un chiffre faux posé plus tôt le bloque
                 self.message =
@@ -413,6 +509,7 @@ impl Partie {
             }
         } else {
             self.erreurs += 1;
+            self.sons.push(Son::Erreur);
             let raison = if place {
                 "Ce n'est pas le bon chiffre"
             } else {
@@ -436,6 +533,7 @@ impl Partie {
             Some((ligne, col, valeur)) => {
                 self.indices += 1;
                 self.modifiee = true;
+                self.sons.push(Son::Indice);
                 self.noter_coup(ligne, col, 0, valeur);
                 self.selection = Some((ligne, col));
                 self.message = format!(
@@ -674,21 +772,21 @@ impl Partie {
 
     // Dessine la grille dans un carré de `cote_px` pixels de côté et sélectionne la case
     // sur laquelle on clique
-    fn dessiner_grille(&mut self, ui: &mut egui::Ui, cote_px: f32) {
+    fn dessiner_grille(&mut self, ui: &mut egui::Ui, cote_px: f32, reglages: &Reglages) {
         let taille = self.grille.taille();
         let nombre = taille.cote();
         let (grille, notes) = (&self.grille, &self.notes);
-        let clic = dessiner_plateau(ui, cote_px, taille, self.selection, |ligne, col| {
+        let clic = dessiner_plateau(ui, cote_px, taille, self.selection, reglages, |ligne, col| {
             let valeur = grille.valeur(ligne, col);
-            // Un chiffre du joueur qui n'est pas celui de la solution s'affiche en rouge
-            let couleur = if grille.est_fixe(ligne, col) {
-                CHIFFRE_DEPART
+            // Un chiffre du joueur qui n'est pas celui de la solution est signalé comme faux
+            let genre = if grille.est_fixe(ligne, col) {
+                GenreChiffre::Depart
             } else if grille.est_correct(ligne, col, valeur) {
-                CHIFFRE_JOUEUR
+                GenreChiffre::Joueur
             } else {
-                CHIFFRE_FAUX
+                GenreChiffre::Faux
             };
-            ContenuCase { valeur, couleur, notes: notes[ligne * nombre + col] }
+            ContenuCase { valeur, genre, notes: notes[ligne * nombre + col] }
         });
         if let Some(case) = clic {
             // Le chiffre en attente est joué dans l'ancienne case avant de changer de case
@@ -750,11 +848,12 @@ impl Partie {
         ui: &mut egui::Ui,
         fin: Fin,
         classement: &mut Classement,
+        palette: &Palette,
     ) -> Option<Action> {
         let mut action = None;
         let (titre, couleur) = match fin {
-            Fin::Victoire => (String::from("Bravo, grille terminée !"), VERT),
-            Fin::Defaite => (format!("Perdu : {} erreurs", MAX_ERREURS), ROUGE),
+            Fin::Victoire => (String::from("Bravo, grille terminée !"), palette.vert),
+            Fin::Defaite => (format!("Perdu : {} erreurs", MAX_ERREURS), palette.rouge),
             Fin::Abandon => (String::from("Partie abandonnée"), ui.visuals().text_color()),
         };
         ui.vertical_centered(|ui| {
@@ -820,8 +919,14 @@ impl Partie {
     }
 
     // Dessine toute la partie. Renvoie une action quand le joueur demande autre chose que jouer.
-    fn afficher(&mut self, ui: &mut egui::Ui, classement: &mut Classement) -> Option<Action> {
+    fn afficher(
+        &mut self,
+        ui: &mut egui::Ui,
+        classement: &mut Classement,
+        reglages: &Reglages,
+    ) -> Option<Action> {
         let mut action = None;
+        let palette = Palette::pour(ui.visuals().dark_mode, reglages.daltonien);
 
         if self.fin.is_none() {
             // Le chrono avance : on redessine deux fois par seconde pour l'afficher
@@ -850,12 +955,12 @@ impl Partie {
             .available_width()
             .min(ui.available_height() - 235.0)
             .max(180.0);
-        ui.vertical_centered(|ui| self.dessiner_grille(ui, cote));
+        ui.vertical_centered(|ui| self.dessiner_grille(ui, cote, reglages));
         ui.add_space(8.0);
 
         match self.fin {
             Some(fin) => {
-                if let Some(demande) = self.dessiner_fin(ui, fin, classement) {
+                if let Some(demande) = self.dessiner_fin(ui, fin, classement, &palette) {
                     action = Some(demande);
                 }
             }
@@ -883,6 +988,7 @@ enum Ecran {
     Classement,
     Statistiques,
     Resolution,
+    Reglages,
 }
 
 struct Application {
@@ -907,6 +1013,8 @@ struct Application {
     filtre_stats: Option<Niveau>,
     // La grille saisie dans l'écran « Résoudre une grille »
     resolveur: Resolveur,
+    // Les réglages du joueur (thème, couleurs, sons, mise en valeur)
+    reglages: Reglages,
 }
 
 impl Application {
@@ -934,6 +1042,7 @@ impl Application {
             taille_stats: Taille::Neuf,
             filtre_stats: None,
             resolveur: Resolveur::new(),
+            reglages: Reglages::charger(),
         }
     }
 
@@ -1009,6 +1118,7 @@ impl Application {
         let reprise_possible = self.partie.as_ref().is_some_and(|partie| partie.fin.is_none());
         let occupe = self.generation.is_some();
         let mut choix = None;
+        let palette = Palette::pour(ui.visuals().dark_mode, self.reglages.daltonien);
 
         ui.vertical_centered(|ui| {
             ui.add_space(30.0);
@@ -1064,6 +1174,10 @@ impl Application {
                 if gros_bouton(ui, "Statistiques") {
                     choix = Some(ChoixMenu::Statistiques);
                 }
+                ui.add_space(8.0);
+                if gros_bouton(ui, "Réglages") {
+                    choix = Some(ChoixMenu::Reglages);
+                }
                 ui.add_space(16.0);
                 if gros_bouton(ui, "Quitter") {
                     choix = Some(ChoixMenu::Quitter);
@@ -1072,7 +1186,7 @@ impl Application {
 
             if !self.erreur.is_empty() {
                 ui.add_space(8.0);
-                ui.colored_label(ROUGE, self.erreur.as_str());
+                ui.colored_label(palette.rouge, self.erreur.as_str());
             }
         });
 
@@ -1087,6 +1201,10 @@ impl Application {
             Some(ChoixMenu::Classement) => self.ecran = Ecran::Classement,
             Some(ChoixMenu::Statistiques) => self.ecran = Ecran::Statistiques,
             Some(ChoixMenu::Resolution) => self.ecran = Ecran::Resolution,
+            Some(ChoixMenu::Reglages) => {
+                self.erreur.clear();
+                self.ecran = Ecran::Reglages;
+            }
             Some(ChoixMenu::Quitter) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             None => {}
         }
@@ -1097,7 +1215,14 @@ impl Application {
             self.ecran = Ecran::Menu;
             return;
         };
-        let action = partie.afficher(ui, &mut self.classement);
+        let action = partie.afficher(ui, &mut self.classement, &self.reglages);
+        // Les sons de la partie sont joués seulement si le joueur les a activés
+        let bruits = std::mem::take(&mut partie.sons);
+        if self.reglages.sons {
+            for bruit in bruits {
+                sons::jouer(bruit);
+            }
+        }
         // On enregistre à chaque coup, et quand on quitte la partie (le chrono est alors à jour)
         let a_sauvegarder =
             partie.modifiee || matches!(action, Some(Action::Menu | Action::Classement));
@@ -1230,6 +1355,7 @@ impl Application {
     // L'écran « Résoudre une grille » : on saisit les chiffres d'une grille, le solveur la remplit
     fn dessiner_resolution(&mut self, ui: &mut egui::Ui) {
         self.lire_clavier_resolution(ui);
+        let palette = Palette::pour(ui.visuals().dark_mode, self.reglages.daltonien);
 
         if ui.button("Menu").clicked() {
             self.ecran = Ecran::Menu;
@@ -1244,20 +1370,21 @@ impl Application {
             .min(ui.available_height() - 215.0)
             .max(180.0);
         let conflits = self.resolveur.conflits();
-        let resolveur = &self.resolveur;
+        let (resolveur, reglages) = (&self.resolveur, &self.reglages);
         let clic = ui
             .vertical_centered(|ui| {
-                dessiner_plateau(ui, cote, resolveur.taille(), resolveur.selection, |ligne, col| {
-                    // Les chiffres saisis sont en noir, ceux du solveur en bleu,
-                    // et ceux qui se contredisent en rouge
-                    let couleur = if conflits[ligne * 9 + col] {
-                        CHIFFRE_FAUX
+                let (taille, selection) = (resolveur.taille(), resolveur.selection);
+                dessiner_plateau(ui, cote, taille, selection, reglages, |ligne, col| {
+                    // Les chiffres saisis sont comme ceux d'une grille de départ, ceux du solveur
+                    // comme ceux du joueur, et ceux qui se contredisent sont signalés comme faux
+                    let genre = if conflits[ligne * 9 + col] {
+                        GenreChiffre::Faux
                     } else if resolveur.est_saisie(ligne, col) {
-                        CHIFFRE_DEPART
+                        GenreChiffre::Depart
                     } else {
-                        CHIFFRE_JOUEUR
+                        GenreChiffre::Joueur
                     };
-                    ContenuCase { valeur: resolveur.valeur(ligne, col), couleur, notes: 0 }
+                    ContenuCase { valeur: resolveur.valeur(ligne, col), genre, notes: 0 }
                 })
             })
             .inner;
@@ -1305,10 +1432,100 @@ impl Application {
                 self.resolveur.nombre_de_chiffres()
             ));
         } else if self.resolveur.est_resolue() {
-            ui.colored_label(VERT, self.resolveur.message.as_str());
+            ui.colored_label(palette.vert, self.resolveur.message.as_str());
         } else {
             ui.label(self.resolveur.message.as_str());
         }
+    }
+
+    // L'écran des réglages : chaque changement est appliqué et enregistré tout de suite
+    fn dessiner_reglages(&mut self, ui: &mut egui::Ui) {
+        let avant = self.reglages;
+        ui.vertical_centered(|ui| {
+            ui.add_space(10.0);
+            ui.heading("Réglages");
+        });
+        ui.add_space(12.0);
+
+        ui.label(RichText::new("Thème").strong());
+        ui.horizontal_wrapped(|ui| {
+            for theme in Theme::TOUS {
+                ui.selectable_value(&mut self.reglages.theme, theme, theme.libelle());
+            }
+        });
+        ui.add_space(10.0);
+
+        ui.label(RichText::new("Couleurs").strong());
+        ui.checkbox(
+            &mut self.reglages.daltonien,
+            "Mode daltonien : bleu et orange à la place du rouge, chiffres faux soulignés",
+        );
+        // Un aperçu avec les couleurs de la grille
+        let palette = Palette::pour(ui.visuals().dark_mode, self.reglages.daltonien);
+        egui::Frame::new().fill(palette.fond).inner_margin(8.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Départ").color(palette.chiffre_depart).size(18.0));
+                ui.label(RichText::new("Votre chiffre").color(palette.chiffre_joueur).size(18.0));
+                ui.label(RichText::new("Chiffre faux").color(palette.chiffre_faux).size(18.0).underline());
+            });
+        });
+        ui.add_space(10.0);
+
+        ui.label(RichText::new("Aide visuelle").strong());
+        ui.checkbox(
+            &mut self.reglages.surligner_zone,
+            "Mettre en valeur la ligne, la colonne et le bloc de la case choisie",
+        );
+        ui.checkbox(
+            &mut self.reglages.surligner_chiffres,
+            "Mettre en valeur les chiffres identiques à celui de la case choisie",
+        );
+        ui.add_space(10.0);
+
+        ui.label(RichText::new("Sons").strong());
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.reglages.sons, "Sons (bon chiffre, erreur, indice, fin de partie)");
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Écouter un bon chiffre").clicked() {
+                sons::jouer(Son::Bon);
+            }
+            if ui.button("Une erreur").clicked() {
+                sons::jouer(Son::Erreur);
+            }
+            if ui.button("Une victoire").clicked() {
+                sons::jouer(Son::Victoire);
+            }
+        });
+        ui.small("Les sons ne sont joués que sous Windows.");
+
+        if self.reglages != avant {
+            // Le thème de la fenêtre change à l'image suivante
+            ui.ctx().request_repaint();
+            self.erreur = match self.reglages.enregistrer() {
+                Ok(()) => String::new(),
+                Err(erreur) => erreur,
+            };
+        }
+        if !self.erreur.is_empty() {
+            ui.add_space(8.0);
+            ui.colored_label(palette.rouge, self.erreur.as_str());
+        }
+
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            if ui.button("Réglages par défaut").clicked() {
+                self.reglages = Reglages::default();
+                ui.ctx().request_repaint();
+                self.erreur = match self.reglages.enregistrer() {
+                    Ok(()) => String::new(),
+                    Err(erreur) => erreur,
+                };
+            }
+            if ui.button("Retour au menu").clicked() {
+                self.ecran = Ecran::Menu;
+            }
+        });
     }
 
     fn dessiner_statistiques(&mut self, ui: &mut egui::Ui) {
@@ -1383,7 +1600,7 @@ impl Application {
 // Ce qu'une case affiche : son chiffre (0 = vide) avec sa couleur, ou ses notes si elle est vide
 struct ContenuCase {
     valeur: u8,
-    couleur: Color32,
+    genre: GenreChiffre,
     // Les notes en bits : le bit (v - 1) vaut 1 si la note v est écrite
     notes: u16,
 }
@@ -1396,8 +1613,10 @@ fn dessiner_plateau(
     cote_px: f32,
     taille: Taille,
     selection: Option<(usize, usize)>,
+    reglages: &Reglages,
     contenu: impl Fn(usize, usize) -> ContenuCase,
 ) -> Option<(usize, usize)> {
+    let palette = Palette::pour(ui.visuals().dark_mode, reglages.daltonien);
     let nombre = taille.cote();
     let (bloc_h, bloc_l) = (taille.bloc_h(), taille.bloc_l());
     let (zone, reponse) = ui.allocate_exact_size(Vec2::splat(cote_px), Sense::click());
@@ -1415,12 +1634,12 @@ fn dessiner_plateau(
     let selection = clic.or(selection);
 
     let peintre = ui.painter_at(zone);
-    peintre.rect_filled(zone, 0.0, FOND);
+    peintre.rect_filled(zone, 0.0, palette.fond);
 
     // Les cases qui contiennent le même chiffre que la case choisie sont mises en valeur
     let chiffre_choisi = selection
         .map(|(ligne, col)| contenu(ligne, col).valeur)
-        .filter(|&valeur| valeur != 0);
+        .filter(|&valeur| valeur != 0 && reglages.surligner_chiffres);
 
     for ligne in 0..nombre {
         for col in 0..nombre {
@@ -1429,17 +1648,18 @@ fn dessiner_plateau(
                 zone.min.y + ligne as f32 * case,
             );
             let rectangle = Rect::from_min_size(coin, Vec2::splat(case));
-            let ContenuCase { valeur, couleur, notes } = contenu(ligne, col);
+            let ContenuCase { valeur, genre, notes } = contenu(ligne, col);
 
             let fond = match selection {
-                Some(choisie) if choisie == (ligne, col) => Some(CASE_SELECTIONNEE),
-                _ if valeur != 0 && Some(valeur) == chiffre_choisi => Some(MEME_CHIFFRE),
+                Some(choisie) if choisie == (ligne, col) => Some(palette.case_selectionnee),
+                _ if valeur != 0 && Some(valeur) == chiffre_choisi => Some(palette.meme_chiffre),
                 Some((l, c))
-                    if l == ligne
-                        || c == col
-                        || (l / bloc_h == ligne / bloc_h && c / bloc_l == col / bloc_l) =>
+                    if reglages.surligner_zone
+                        && (l == ligne
+                            || c == col
+                            || (l / bloc_h == ligne / bloc_h && c / bloc_l == col / bloc_l)) =>
                 {
-                    Some(LIGNE_COLONNE_BLOC)
+                    Some(palette.ligne_colonne_bloc)
                 }
                 _ => None,
             };
@@ -1450,6 +1670,7 @@ fn dessiner_plateau(
             if valeur != 0 {
                 // Un nombre à deux chiffres a besoin d'une police un peu plus petite
                 let hauteur = if valeur >= 10 { case * 0.45 } else { case * 0.6 };
+                let couleur = palette.chiffre(genre);
                 peintre.text(
                     rectangle.center(),
                     Align2::CENTER_CENTER,
@@ -1457,6 +1678,18 @@ fn dessiner_plateau(
                     FontId::proportional(hauteur),
                     couleur,
                 );
+                // En mode daltonien, un chiffre faux est aussi souligné : la couleur ne suffit pas
+                if genre == GenreChiffre::Faux && reglages.daltonien {
+                    let y = rectangle.center().y + hauteur * 0.55;
+                    let demi = hauteur * if valeur >= 10 { 0.5 } else { 0.3 };
+                    peintre.line_segment(
+                        [
+                            Pos2::new(rectangle.center().x - demi, y),
+                            Pos2::new(rectangle.center().x + demi, y),
+                        ],
+                        Stroke::new(2.0, couleur),
+                    );
+                }
             } else {
                 // Une case vide montre ses notes en petit, rangées en tableau :
                 // le chiffre v a toujours la même place dans la case
@@ -1473,7 +1706,7 @@ fn dessiner_plateau(
                         coin.y + (rang as f32 + 0.5) * hauteur,
                     );
                     // Les notes du chiffre choisi ressortent
-                    let couleur = if chiffre_choisi == Some(note as u8) { CHIFFRE_JOUEUR } else { NOTE };
+                    let couleur = if chiffre_choisi == Some(note as u8) { palette.chiffre_joueur } else { palette.note };
                     peintre.text(
                         centre,
                         Align2::CENTER_CENTER,
@@ -1491,9 +1724,9 @@ fn dessiner_plateau(
     for i in 0..=nombre {
         let decalage = i as f32 * case;
         let vertical = if i % bloc_l == 0 {
-            Stroke::new(3.0, TRAIT_EPAIS)
+            Stroke::new(3.0, palette.trait_epais)
         } else {
-            Stroke::new(1.0, TRAIT_FIN)
+            Stroke::new(1.0, palette.trait_fin)
         };
         peintre.line_segment(
             [
@@ -1503,9 +1736,9 @@ fn dessiner_plateau(
             vertical,
         );
         let horizontal = if i % bloc_h == 0 {
-            Stroke::new(3.0, TRAIT_EPAIS)
+            Stroke::new(3.0, palette.trait_epais)
         } else {
-            Stroke::new(1.0, TRAIT_FIN)
+            Stroke::new(1.0, palette.trait_fin)
         };
         peintre.line_segment(
             [
@@ -1526,6 +1759,12 @@ fn gros_bouton(ui: &mut egui::Ui, texte: &str) -> bool {
 
 impl eframe::App for Application {
     fn ui(&mut self, ui: &mut egui::Ui, _cadre: &mut eframe::Frame) {
+        // Le thème choisi s'applique dès la première image, et à chaque changement
+        let theme = theme_egui(self.reglages.theme);
+        if ui.ctx().options(|options| options.theme_preference) != theme {
+            ui.ctx().set_theme(theme);
+            ui.ctx().request_repaint();
+        }
         self.recevoir_nouvelle_grille();
 
         egui::CentralPanel::default().show(ui, |ui| match self.ecran {
@@ -1534,6 +1773,7 @@ impl eframe::App for Application {
             Ecran::Classement => self.dessiner_classement(ui),
             Ecran::Statistiques => self.dessiner_statistiques(ui),
             Ecran::Resolution => self.dessiner_resolution(ui),
+            Ecran::Reglages => self.dessiner_reglages(ui),
         });
     }
 
@@ -2302,6 +2542,7 @@ mod tests {
             taille_stats: Taille::Neuf,
             filtre_stats: None,
             resolveur: Resolveur::new(),
+            reglages: Reglages::default(),
         }
     }
 
@@ -2393,5 +2634,129 @@ mod tests {
         // Le 1 en attente est joué en (0, 3) où il est refusé, puis le 4 est annulé
         assert!(partie.tampon.is_none());
         assert_eq!(partie.grille.valeur(0, 2), 0);
+    }
+
+    // La luminance relative d'une couleur (formule du W3C pour le contraste)
+    fn luminance(couleur: Color32) -> f32 {
+        let lineaire = |composante: u8| {
+            let c = composante as f32 / 255.0;
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lineaire(couleur.r()) + 0.7152 * lineaire(couleur.g()) + 0.0722 * lineaire(couleur.b())
+    }
+
+    fn contraste(a: Color32, b: Color32) -> f32 {
+        let (claire, sombre) = (luminance(a).max(luminance(b)), luminance(a).min(luminance(b)));
+        (claire + 0.05) / (sombre + 0.05)
+    }
+
+    const COMBINAISONS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+
+    #[test]
+    fn test_les_chiffres_se_lisent_sur_le_fond_dans_toutes_les_palettes() {
+        for (sombre, daltonien) in COMBINAISONS {
+            let palette = Palette::pour(sombre, daltonien);
+            for (nom, couleur) in [
+                ("départ", palette.chiffre_depart),
+                ("joueur", palette.chiffre_joueur),
+                ("faux", palette.chiffre_faux),
+                ("note", palette.note),
+                ("vert", palette.vert),
+                ("rouge", palette.rouge),
+            ] {
+                let rapport = contraste(couleur, palette.fond);
+                assert!(
+                    rapport >= 3.0,
+                    "{} illisible (contraste {:.1}) en sombre={} daltonien={}",
+                    nom, rapport, sombre, daltonien
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_les_chiffres_se_distinguent_entre_eux() {
+        for (sombre, daltonien) in COMBINAISONS {
+            let palette = Palette::pour(sombre, daltonien);
+            let (depart, joueur, faux) = (
+                palette.chiffre(GenreChiffre::Depart),
+                palette.chiffre(GenreChiffre::Joueur),
+                palette.chiffre(GenreChiffre::Faux),
+            );
+            assert!(depart != joueur && joueur != faux && depart != faux);
+        }
+    }
+
+    #[test]
+    fn test_le_mode_daltonien_evite_le_rouge_et_le_vert() {
+        for sombre in [false, true] {
+            let normale = Palette::pour(sombre, false);
+            let daltonien = Palette::pour(sombre, true);
+            assert_ne!(normale.chiffre_faux, daltonien.chiffre_faux);
+            assert_ne!(normale.vert, daltonien.vert);
+            // Le vert et le rouge d'une même palette ne se confondent pas par leur luminosité :
+            // le chiffre faux est un orange, avec plus de rouge que de bleu
+            assert!(daltonien.chiffre_faux.r() > daltonien.chiffre_faux.b());
+            // Ce que le mode ne touche pas
+            assert_eq!(normale.fond, daltonien.fond);
+            assert_eq!(normale.trait_epais, daltonien.trait_epais);
+        }
+    }
+
+    #[test]
+    fn test_le_theme_sombre_a_un_fond_sombre() {
+        assert!(luminance(Palette::pour(true, false).fond) < 0.1);
+        assert!(luminance(Palette::pour(false, false).fond) > 0.9);
+    }
+
+    #[test]
+    fn test_le_theme_choisi_devient_celui_d_egui() {
+        assert_eq!(theme_egui(Theme::Systeme), egui::ThemePreference::System);
+        assert_eq!(theme_egui(Theme::Clair), egui::ThemePreference::Light);
+        assert_eq!(theme_egui(Theme::Sombre), egui::ThemePreference::Dark);
+    }
+
+    #[test]
+    fn test_sons_d_un_bon_chiffre_d_une_erreur_et_d_un_indice() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        assert_eq!(partie.sons, [Son::Bon]);
+
+        partie.sons.clear();
+        jouer(&mut partie, 0, 3, 5); // brise une règle : une erreur
+        assert_eq!(partie.sons, [Son::Erreur]);
+
+        partie.sons.clear();
+        partie.demander_indice();
+        assert_eq!(partie.sons, [Son::Indice]);
+    }
+
+    #[test]
+    fn test_pas_de_son_quand_rien_ne_change() {
+        let mut partie = partie_fixe();
+        jouer(&mut partie, 0, 2, 4);
+        partie.sons.clear();
+        jouer(&mut partie, 0, 2, 4); // déjà là
+        jouer(&mut partie, 0, 0, 7); // case de départ
+        jouer(&mut partie, 0, 2, 0); // effacer
+        assert!(partie.sons.is_empty());
+    }
+
+    #[test]
+    fn test_sons_de_victoire_de_defaite_et_d_abandon() {
+        let mut gagnee = partie_fixe();
+        gagner(&mut gagnee);
+        assert_eq!(gagnee.sons.last(), Some(&Son::Victoire));
+
+        let mut perdue = partie_fixe();
+        for _ in 0..MAX_ERREURS {
+            jouer(&mut perdue, 0, 2, 5);
+        }
+        assert_eq!(perdue.sons.last(), Some(&Son::Defaite));
+        assert_eq!(perdue.sons.iter().filter(|&&son| son == Son::Erreur).count(), MAX_ERREURS as usize);
+
+        let mut abandonnee = partie_fixe();
+        abandonnee.afficher_solution();
+        assert!(abandonnee.sons.is_empty());
     }
 }

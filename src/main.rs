@@ -4,9 +4,11 @@ mod classement;
 mod grille;
 mod gui;
 mod jeu;
+mod reglages;
 mod resolveur;
 mod sauvegarde;
 mod solveur;
+mod sons;
 mod statistiques;
 
 use grille::{Grille, Niveau, Origine, Taille};
